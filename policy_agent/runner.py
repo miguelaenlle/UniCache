@@ -145,12 +145,25 @@ class Evaluator:
         print(f'Replay {policy}/{split}: {folder.name}', flush=True)
         folder.mkdir(parents=True, exist_ok=False)
         completed = folder / 'completed.json'
+        disabled_control = policy == 'NONE'
+        if candidate and getattr(self.args, 'policy_interface', 'v1') == 'v2':
+            from policy_agent.v2_bridge import V2Remote
+            probe = V2Remote(Path(candidate).read_text(),
+                             {'api_version':2, 'capacity':self.args.gpu_blocks, 'block_size':8})
+            try:
+                disabled_control = probe.initial['cache_mode'] == 'disabled'
+            finally:
+                probe.close()
         env = dict(os.environ, VLLM_USE_V1='0', VLLM_NO_USAGE_STATS='1', PYTHONHASHSEED='0',
                    HF_HUB_OFFLINE='1', TOKENIZERS_PARALLELISM='false', MPLBACKEND='Agg',
                    COLLECT_TRACE='1' if policy == 'NONE' else '0', UNICACHE_COMPLETIONS=str(completed))
         env.pop('UNICACHE_POLICY_CANDIDATE', None)
+        env.pop('UNICACHE_POLICY_INTERFACE', None)
+        env.pop('POLICY_AGENT_INTERFACE', None)
         if candidate:
             env['UNICACHE_POLICY_CANDIDATE'] = str(candidate)
+            if getattr(self.args, 'policy_interface', 'v1') == 'v2':
+                env['UNICACHE_POLICY_INTERFACE'] = 'v2'
         for var in ['MPLCONFIGDIR', 'VLLM_CACHE_ROOT', 'VLLM_CONFIG_ROOT']:
             path = folder / var
             path.mkdir()
@@ -162,7 +175,7 @@ class Evaluator:
                '--simulator-ttft', '3.9e-05 * (batch_size ** 0.997) * (max_len ** 1.014)',
                '--simulator-tpot', '.01', '--simulator-output-dir', str(folder),
                '--simulator-task-config', str(self.configs[split]), '--log-level', 'WARNING']
-        if policy != 'NONE':
+        if not disabled_control:
             cmd.append('--enable-prefix-caching')
         if use_map:
             cmd += ['--opt-block-use-map-path', str(use_map)]
@@ -195,7 +208,7 @@ class Evaluator:
         actual_prompts = json.loads(completed.with_name('completed-prompts.json').read_text())
         if actual_prompts != {k:v[0] for k,v in expected.items()}:
             raise RuntimeError('Trace correctness failed: completed prompt lengths differ')
-        if policy == 'NONE':
+        if disabled_control:
             # Upstream omits cache-hit records when prefix caching is disabled.
             # The independent completion ledger still verifies every request and token length.
             return {'token_weighted_hit_ratio':0., 'hit_tokens':0,
@@ -306,7 +319,9 @@ def main():
     p.add_argument('--trace', choices=list(TRACE_CONFIGS), required=True)
     p.add_argument('--serving_model', choices=['llama-3.2-1b-instruct'], required=True)
     p.add_argument('--coding_model', default='claude:opus')
-    p.add_argument('--start-policy', choices=[x for x in POLICIES if x != 'OPT'], default='UniCache')
+    p.add_argument('--start-policy', choices=[x for x in ALL_POLICIES if x not in ('OPT', 'NONE')], default='UniCache')
+    p.add_argument('--policy-interface', choices=['v1', 'v2'], default='v1',
+                   help='v2 owns all policy bookkeeping and requires an explicit victim')
     p.add_argument('--compare', default=','.join(POLICIES), help='Comma-separated policies, all, or empty string')
     p.add_argument('--require-baselines', nargs='+', choices=ALL_POLICIES, default=[], help='Do not start Claude unless these baselines pass both splits')
     p.add_argument('--max-submissions', type=int, default=30)
@@ -340,20 +355,28 @@ def main():
     (out/'internal').mkdir()
     for name in ['submit.py', 'local_client.py', 'run_local.py', 'smoke_test.py']:
         shutil.copyfile(ROOT/'policy_agent'/name, sandbox/name)
-    shutil.copyfile(ROOT/'policy_agent/starter.py', sandbox/'policy.py')
+    if args.policy_interface == 'v2':
+        from policy_agent.v2_policies import source_for_policy
+        (sandbox/'policy.py').write_text(source_for_policy(args.start_policy))
+    else:
+        shutil.copyfile(ROOT/'policy_agent/starter.py', sandbox/'policy.py')
     (sandbox/'rationale.md').write_text('Keep the starting policy unchanged.\n')
     (sandbox/'prompt.md').write_text(PROMPT.format(budget=args.max_submissions))
-    (sandbox/'policy_api.md').write_text(API)
+    (sandbox/'policy_api.md').write_text((ROOT/'policy_agent/v2_api.md').read_text()
+                                        if args.policy_interface == 'v2' else API)
     (sandbox/'history.jsonl').touch()
     write(sandbox/'run_context.json', {'trace':args.trace, 'serving_model':args.serving_model,
-          'starting_policy':args.start_policy, 'max_submissions':args.max_submissions,
+          'starting_policy':args.start_policy, 'policy_interface':args.policy_interface,
+          'max_submissions':args.max_submissions,
           'block_size':8, 'gpu_blocks':args.gpu_blocks, 'cpu_blocks':50000,
           'split':'50/50 by simulated session start, whole sessions, cold caches',
           'tune_requests':len(expected['tune']), 'source_session_limit':manifest['source_session_limit']})
     write(out/'run.json', {'args':vars(args), 'trace':manifest,
           'git_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
           'python':sys.version, 'model_checksums':{str(x.relative_to(ROOT)):digest(x) for x in (ROOT/'models/Llama-3.2-1B-Instruct').glob('*.json')},
-          'limitations':['Eviction controller retains starting-policy tracking hooks; None delegates unchanged.',
+          'limitations':[('v1 retains starting-policy tracking hooks; None delegates unchanged.'
+                           if args.policy_interface == 'v1' else
+                           'v2 uses a fixed LRU physical scaffold; its derived metadata is ignored by the editable worker.'),
                         'Claude uses restricted tool permissions, not OS isolation; web tools disabled and Bash limited to submission and offline local-test clients. API network remains available.',
                         'Worker has CPU and callback deadlines; strict resident-memory cap not implemented.',
                         'Original virtual-time gap generation is completion-relative, not a fixed wall-clock replay.']})
@@ -362,7 +385,12 @@ def main():
         print('Prepared only; no simulations or Claude calls made.')
         return
     # Fail closed if OS isolation cannot be activated, before spending on Claude.
-    probe = Remote((ROOT/'policy_agent/starter.py').read_text())
+    if args.policy_interface == 'v2':
+        from policy_agent.v2_bridge import V2Remote
+        probe = V2Remote((sandbox/'policy.py').read_text(),
+                         {'api_version':2, 'capacity':args.gpu_blocks, 'block_size':8})
+    else:
+        probe = Remote((ROOT/'policy_agent/starter.py').read_text())
     probe.close()
     evaluator = Evaluator(args,out,configs,expected)
     profiles = {}

@@ -581,6 +581,10 @@ class Scheduler:
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
         self.waiting.append(seq_group)
+        from policy_agent import events as policy_events
+        if policy_events.enabled():
+            policy_events.emit('request_state', request_id=seq_group.request_id,
+                               state='waiting')
 
     def _add_seq_group_to_running(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the running queue.
@@ -1767,6 +1771,10 @@ class Scheduler:
         self.block_manager.allocate(seq_group)
         for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
             seq.status = SequenceStatus.RUNNING
+            from policy_agent import events as policy_events
+            if policy_events.enabled():
+                policy_events.emit('request_state', request_id=seq_group.request_id,
+                                   sequence_id=seq.seq_id, state='running')
 
     def _append_slots(
         self,
@@ -1861,6 +1869,10 @@ class Scheduler:
         assert len(seqs) == 1
         for seq in seqs:
             seq.status = SequenceStatus.WAITING
+            from policy_agent import events as policy_events
+            if policy_events.enabled():
+                policy_events.emit('request_state', request_id=seq_group.request_id,
+                                   sequence_id=seq.seq_id, state='preempted')
             self.free_seq(seq)
             seq.reset_state_for_recompute()
         self._free_seq_group_cross_attn_blocks(seq_group)
@@ -1881,6 +1893,10 @@ class Scheduler:
         blocks_to_swap_in.extend(mapping)
         for seq in seq_group.get_seqs(status=SequenceStatus.SWAPPED):
             seq.status = SequenceStatus.RUNNING
+            from policy_agent import events as policy_events
+            if policy_events.enabled():
+                policy_events.emit('request_state', request_id=seq_group.request_id,
+                                   sequence_id=seq.seq_id, state='running')
 
     def _swap_out(
         self,
@@ -1897,6 +1913,10 @@ class Scheduler:
         blocks_to_swap_out.extend(mapping)
         for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
             seq.status = SequenceStatus.SWAPPED
+            from policy_agent import events as policy_events
+            if policy_events.enabled():
+                policy_events.emit('request_state', request_id=seq_group.request_id,
+                                   sequence_id=seq.seq_id, state='swapped')
 
     def _passed_delay(self, now: float) -> bool:
         if self.prev_prompt:

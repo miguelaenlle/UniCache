@@ -113,6 +113,13 @@ class CpuGpuBlockAllocator(DeviceAwareBlockAllocator):
             Device.GPU: gpu_block_allocator,
         }
 
+        from policy_agent import events as policy_events
+        if policy_events.enabled():
+            for device, allocator in self._allocators.items():
+                if hasattr(allocator, 'evictor'):
+                    allocator.evictor.cache_id = device.name.lower() + ':0'
+                    allocator.evictor.config['cache_id'] = allocator.evictor.cache_id
+
         self._swap_mapping: Dict[int, int] = {}
         self._null_block: Optional[Block] = None
 

@@ -10,13 +10,14 @@ from policy_agent.bridge import profile
 
 MAX_OUTPUT = 1024*1024
 BOOTSTRAP = '''
-import os, resource, runpy, sys
+import json, os, resource, runpy, sys
 resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
 resource.setrlimit(resource.RLIMIT_FSIZE, (10*1024*1024, 10*1024*1024))
 resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
 workspace, script, *args = sys.argv[1:]
 os.chdir(workspace)
 sys.path.insert(0, workspace)
+sys.path.extend(json.loads(os.environ.get('POLICY_DEPENDENCY_PATHS', '[]')))
 sys.argv = [script, *args]
 runpy.run_path(script, run_name='__main__')
 '''
@@ -25,8 +26,10 @@ runpy.run_path(script, run_name='__main__')
 def run_test(workspace, message, timeout=30):
     workspace = Path(workspace).resolve()
     action = message['action']
+    context_path = workspace/'run_context.json'
+    v2 = context_path.is_file() and json.loads(context_path.read_text()).get('policy_interface') == 'v2'
     if action == 'smoke_test':
-        script = Path(__file__).with_name('smoke_suite.py').resolve()
+        script = Path(__file__).with_name('smoke_suite_v2.py' if v2 else 'smoke_suite.py').resolve()
         args = []
     elif action == 'local_test':
         script = (workspace/message['script']).resolve()
@@ -42,12 +45,19 @@ def run_test(workspace, message, timeout=30):
     if output.is_symlink() or not output.resolve().is_relative_to(workspace):
         raise ValueError('Unsafe local-output path')
     runtime = Path(sys.executable).resolve()
-    rules = profile([workspace, script, sys.base_prefix, runtime], writable=output, network=False)
+    dependencies, packages = [], []
+    if v2:
+        from policy_agent.v2_bridge import numerical_runtime
+        dependencies, packages, _ = numerical_runtime()
+    rules = profile([workspace, script, sys.base_prefix, runtime, *packages], writable=output, network=False)
     # Coding-session auth/config is not an input to local Python tests.
     rules += '\n(deny file-read-data (subpath ' + json.dumps(str(workspace/'home')) + '))'
     command = ['/usr/bin/sandbox-exec','-p',rules,str(runtime),'-I','-S','-c',BOOTSTRAP,
                str(workspace),str(script),*args]
     env = {'PATH':'/usr/bin:/bin', 'HOME':str(output), 'TMPDIR':str(output)}
+    env['POLICY_DEPENDENCY_PATHS'] = json.dumps(dependencies)
+    env['OPENBLAS_NUM_THREADS'] = '1'
+    env['OMP_NUM_THREADS'] = '1'
     process = subprocess.Popen(command, cwd=workspace, env=env, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     collected = bytearray()

@@ -141,6 +141,13 @@ class OutputSimulator:
                 active_queue = "agentic"
             else:
                 active_queue = "single"
+            from policy_agent import events as policy_events
+            if policy_events.enabled():
+                policy_events.emit('prefill_accounted', request_id=request_id,
+                                   workload_class=key_id, task_category=active_queue,
+                                   cached_prompt_tokens=computed_token,
+                                   total_prompt_tokens=prompt_token,
+                                   accounting_ordinal=self.step_track)
             # Update the hit rate for the active queue
             logger.debug(f"key_id {key_id} | active_queue {active_queue}")
             self.tracked_hit_stats[active_queue].append(computed_token)

@@ -320,6 +320,12 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         if block_ids is None:
             block_ids = range(num_blocks)
 
+        from policy_agent import events as policy_events
+        self._policy_v2 = policy_events.enabled()
+        self._policy_generations = {}
+        self._policy_lookup_counter = 0
+        if policy_events.independent_enabled():
+            eviction_policy = EvictionPolicy.LRU
         self._block_size = block_size
 
         # A mapping of prefix hash to block index. All blocks which have a
@@ -371,6 +377,11 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         # Evitor used to maintain how we want to handle those computed blocks
         # if we find memory pressure is high.
         self.evictor: Evictor = make_evictor(self.eviction_policy)
+        if self._policy_v2:
+            # Remote initialization is lazy, after physical configuration is bound.
+            self.evictor.config.update(capacity=num_blocks, block_size=block_size,
+                                       block_size_tokens=block_size,
+                                       block_ids=list(self._block_tracker))
 
         # We share the refcounter between allocators. This allows us to promote
         # blocks originally allocated in the hashless allocator to immutable
@@ -432,10 +443,27 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         assert block.content_hash is not None
 
         cached_block_id = self._cached_blocks.get(block.content_hash, None)
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            self._policy_lookup_counter += 1
+            lookup_id = self._policy_lookup_counter
+            usable = (cached_block_id is not None and self.block_is_computed(cached_block_id))
+            policy_events.emit_to(self.evictor, 'lookup', lookup_id=lookup_id,
+                                  content_hash=str(block.content_hash),
+                                  depth=block.num_tokens_total,
+                                  hit=cached_block_id is not None,
+                                  computed=usable, usable=usable,
+                                  block_id=cached_block_id)
         if cached_block_id is not None:
             self.metric_data.query(hit=True)
             block.block_id = cached_block_id
             self._incr_refcount_cached_block(block)
+            if self._policy_v2:
+                from policy_agent import events as policy_events
+                policy_events.emit_to(self.evictor, 'lookup_completed', hit=True,
+                                      lookup_id=lookup_id,
+                                      content_hash=str(block.content_hash),
+                                      block_id=block.block_id)
             return block
         self.metric_data.query(hit=False)
         self._block_pool.free_block(block)
@@ -443,6 +471,12 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         # No cached block => Allocate a new block
         block = self.allocate_mutable_block(prev_block, extra_hash=extra_hash)
         block.append_token_ids(token_ids)
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            policy_events.emit_to(self.evictor, 'lookup_completed', hit=False,
+                                  lookup_id=lookup_id,
+                                  content_hash=str(block.content_hash),
+                                  block_id=block.block_id)
         # cache miss
         if self.eviction_policy in (EvictionPolicy.LeCaR, EvictionPolicy.ARC):
             self.evictor.miss(block.content_hash)
@@ -492,6 +526,14 @@ class PrefixCachingBlockAllocator(BlockAllocator):
                                             extra_hash=extra_hash)
         assert not block.computed
         assert block.content_hash is None
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            policy_events.emit_to(self.evictor, 'block_created', block_id=block_id,
+                                  generation=self._policy_generations[block_id],
+                                  content_hash=None, depth=block.num_tokens_total,
+                                  valid_tokens=0, computed=False,
+                                  parent_content_hash=(str(prev_block.content_hash)
+                                                       if prev_block is not None and prev_block.content_hash is not None else None))
         return block
 
     def _incr_refcount_cached_block(self, block: Block) -> None:
@@ -502,6 +544,10 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         assert block_id is not None
 
         refcount = self._refcounter.incr(block_id)
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            policy_events.emit_to(self.evictor, 'block_activated', block_id=block_id,
+                                  refcount=refcount, content_hash=str(block.content_hash))
         if refcount == 1:
             # In case a cached block was evicted, restore its tracking
             if block_id in self.evictor:
@@ -541,6 +587,10 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         block_id = block.block_id
         assert block_id is not None
         refcount = self._refcounter.decr(block_id)
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            policy_events.emit_to(self.evictor, 'refcount_changed', block_id=block_id,
+                                  refcount=refcount)
         if refcount > 0:
             block.block_id = None
             return
@@ -638,6 +688,10 @@ class PrefixCachingBlockAllocator(BlockAllocator):
 
         # Decrement refcount of the block_id, but do not free the block object
         # itself (will be handled by the caller)
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            policy_events.emit_to(self.evictor, 'block_released', block_id=block_id,
+                                  refcount=refcount - 1, mutable=True)
         self._hashless_allocator.free(block, keep_block_object=True)
 
     def _allocate_block_id(self) -> BlockId:
@@ -646,14 +700,24 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         """
         hashless_block_id = self._maybe_allocate_hashless_block_id()
         if hashless_block_id is not None:
+            self._policy_new_generation(hashless_block_id)
             return hashless_block_id
 
         evicted_block_id = self._maybe_allocate_evicted_block_id()
         if evicted_block_id is not None:
+            self._policy_new_generation(evicted_block_id)
             return evicted_block_id
 
         # No block available in hashless allocator, nor in unused cache blocks.
         raise BlockAllocator.NoFreeBlocksError()
+
+    def _policy_new_generation(self, block_id):
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            generation = self._policy_generations.get(block_id, 0) + 1
+            self._policy_generations[block_id] = generation
+            policy_events.emit_to(self.evictor, 'block_allocated',
+                                  block_id=block_id, generation=generation)
 
     def _maybe_allocate_hashless_block_id(self) -> Optional[BlockId]:
         try:
@@ -784,6 +848,10 @@ class PrefixCachingBlockAllocator(BlockAllocator):
             refcount = self._refcounter.incr(block_id)
             assert refcount != 1, "can't fork free'd block_id = {}".format(
                 block_id)
+            if self._policy_v2:
+                from policy_agent import events as policy_events
+                policy_events.emit_to(self.evictor, 'refcount_changed', block_id=block_id,
+                                      refcount=refcount, reason='fork')
 
             forked_block = self._block_pool.init_block(
                 prev_block=prev_block,
@@ -852,8 +920,18 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         # Should not have any cached blocks because all blocks are evicted.
         assert not self._cached_blocks
 
-        # Reset the evictor.
+        # Reset the evictor. A cache reset starts fresh policy state as well.
+        previous_config = previous_cache_id = None
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            previous_config = dict(self.evictor.config)
+            previous_cache_id = self.evictor.cache_id
+            policy_events.unregister(self.evictor)
+            self.evictor.close()
         self.evictor = make_evictor(self.eviction_policy)
+        if self._policy_v2:
+            self.evictor.config.update(previous_config)
+            self.evictor.cache_id = previous_cache_id
 
         # Reset the block tracker.
         for block_id in self._block_tracker:
@@ -896,6 +974,15 @@ class PrefixCachingBlockAllocator(BlockAllocator):
             # because other sequences in the same batch cannot reuse
             # this block.
             self._cached_blocks[block.content_hash] = block.block_id
+            if self._policy_v2:
+                from policy_agent import events as policy_events
+                policy_events.emit_to(self.evictor, 'hash_binding',
+                                      block_id=block.block_id,
+                                      content_hash=str(block.content_hash),
+                                      depth=block.num_tokens_total,
+                                      valid_tokens=len(block.token_ids), computed=False,
+                                      parent_content_hash=(str(block.prev_block.content_hash)
+                                          if block.prev_block is not None and block.prev_block.content_hash is not None else None))
             # Mark this block as touched so that it can be marked as
             # computed after the entire batch of sequences are scheduled.
             self._touched_blocks.add(block.block_id)
@@ -934,6 +1021,11 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         trg_block_id = self._allocate_block_id()
 
         self._cow_tracker.record_cow(src_block_id, trg_block_id)
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            policy_events.emit_to(self.evictor, 'copy_on_write',
+                                  source_block_id=src_block_id,
+                                  block_id=trg_block_id)
 
         return trg_block_id
 
@@ -1293,6 +1385,9 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         # Mark all touched blocks as computed.
         for block_id in self._touched_blocks:
             self._block_tracker[block_id].computed = True
+            if self._policy_v2:
+                from policy_agent import events as policy_events
+                policy_events.emit_to(self.evictor, 'block_computed', block_id=block_id)
         self._touched_blocks.clear()
 
     def _track_block_id_no_reset(self, block_id: Optional[BlockId],
@@ -1634,6 +1729,14 @@ class PrefixCachingBlock(Block):
         # physical block index.
         if self.content_hash is not None:
             self.block_id = self._allocator.promote_to_immutable_block(self)
+        if getattr(self._allocator, '_policy_v2', False):
+            from policy_agent import events as policy_events
+            policy_events.emit_to(self._allocator.evictor, 'block_changed',
+                                  block_id=self.block_id,
+                                  content_hash=(str(self.content_hash)
+                                                if self.content_hash is not None else None),
+                                  depth=self.num_tokens_total,
+                                  valid_tokens=len(self.token_ids), computed=self.computed)
 
     @property
     def block_id(self) -> Optional[int]:

@@ -1888,10 +1888,23 @@ def _make_builtin_evictor(eviction_policy: EvictionPolicy) -> Evictor:
 
 
 def make_evictor(eviction_policy: EvictionPolicy) -> Evictor:
-    base = _make_builtin_evictor(eviction_policy)
     candidate = os.environ.get("UNICACHE_POLICY_CANDIDATE")
+    if os.environ.get('UNICACHE_POLICY_INTERFACE') == 'v2':
+        if not candidate:
+            raise ValueError('v2 requires an explicit self-contained policy source')
+        from pathlib import Path
+        from policy_agent.v2_bridge import IndependentEvictor
+        return IndependentEvictor(Path(candidate).read_text())
+    base = _make_builtin_evictor(eviction_policy)
+    if candidate and os.environ.get('UNICACHE_POLICY_OBSERVE') == '1':
+        from pathlib import Path
+        from policy_agent.v2_shadow import NativeShadowEvictor
+        return NativeShadowEvictor(base, Path(candidate).read_text())
     if candidate:
         from pathlib import Path
         from policy_agent.bridge import ControlledEvictor
         return ControlledEvictor(base, Path(candidate).read_text())
+    if os.environ.get('UNICACHE_POLICY_DECISIONS'):
+        from policy_agent.v2_bridge import NativeDecisionAudit
+        return NativeDecisionAudit(base)
     return base

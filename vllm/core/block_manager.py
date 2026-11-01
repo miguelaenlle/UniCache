@@ -75,6 +75,12 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
                  sliding_window: Optional[int] = None,
                  enable_caching: bool = False,
                  eviction_policy: Optional[EvictionPolicy] = None) -> None:
+        from policy_agent import events as policy_events
+        self._policy_v2 = policy_events.enabled()
+        self._policy_last_steps = {}
+        if policy_events.independent_enabled() and enable_caching:
+            # Physical scaffold only. Its recency fields are never policy input.
+            eviction_policy = EvictionPolicy.LRU
         self.block_size = block_size
         self.num_total_gpu_blocks = num_gpu_blocks
         self.num_total_cpu_blocks = num_cpu_blocks
@@ -299,6 +305,12 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             # Already freed or haven't been scheduled yet.
             return
 
+        if self._policy_v2:
+            from policy_agent import events as policy_events
+            policy_events.emit('sequence_release', sequence_id=seq_id,
+                               block_ids=list(self.block_tables[seq_id].physical_block_ids),
+                               last_step=self._policy_last_steps.pop(seq_id, None))
+
         # Update seq block ids with the latest access time
         if self.eviction_policy in (EvictionPolicy.LRU, EvictionPolicy.OPT,
                                     EvictionPolicy.OFFSET):
@@ -352,6 +364,16 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
 
         if self.enable_caching:
             seq_id = seq.seq_id
+            if self._policy_v2:
+                from policy_agent import events as policy_events
+                step = dict(sequence_id=seq_id, request_id=request_id, now=now,
+                            is_prefill=is_prefill,
+                            block_ids=list(self.block_tables[seq_id].physical_block_ids),
+                            workload_class=policy_events.workload_class(request_id),
+                            prompt_tokens_len=len(prompt_token_ids or []),
+                            output_tokens_len=len(output_token_ids or []))
+                self._policy_last_steps[seq_id] = step
+                policy_events.emit('sequence_step', **step)
             # Record the latest access time for the sequence. The actual update
             # of the block ids is deferred to the sequence free(..) call, since
             # only during freeing of block ids, the blocks are actually added to

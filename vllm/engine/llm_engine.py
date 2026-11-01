@@ -374,6 +374,33 @@ class LLMEngine:
             for v_id in range(self.parallel_config.pipeline_parallel_size)
         ]
 
+        from policy_agent import events as policy_events
+        if policy_events.enabled():
+            text_config = self.model_config.hf_text_config
+            layers = self.model_config.get_num_layers(self.parallel_config)
+            kv_heads = self.model_config.get_num_kv_heads(self.parallel_config)
+            head_size = self.model_config.get_head_size()
+            cache_dtype = self.cache_config.cache_dtype
+            effective_dtype = str(self.model_config.dtype) if cache_dtype == 'auto' else cache_dtype
+            element_bytes = (1 if 'fp8' in effective_dtype else
+                             {'torch.float16': 2, 'torch.bfloat16': 2,
+                              'torch.float32': 4, 'float16': 2, 'bfloat16': 2,
+                              'float32': 4}.get(effective_dtype))
+            policy_events.configure(
+                serving_model=self.model_config.model,
+                max_model_len=self.model_config.max_model_len,
+                max_num_seqs=self.scheduler_config.max_num_seqs,
+                max_num_batched_tokens=self.scheduler_config.max_num_batched_tokens,
+                preemption_mode=self.scheduler_config.preemption_mode,
+                kv_dtype=effective_dtype,
+                model_num_layers=getattr(text_config, 'num_hidden_layers', None),
+                model_num_kv_heads=getattr(text_config, 'num_key_value_heads', None),
+                local_num_layers=layers, local_num_kv_heads=kv_heads,
+                head_size=head_size,
+                kv_bytes_per_block=(2 * layers * kv_heads * head_size *
+                                    self.cache_config.block_size * element_bytes
+                                    if element_bytes is not None else None))
+
         # Metric Logging.
         if self.log_stats:
             if stat_loggers is not None:
@@ -693,6 +720,18 @@ class LLMEngine:
         ]
         min_cost_scheduler = self.scheduler[costs.index(min(costs))]
         min_cost_scheduler.add_seq_group(seq_group)
+        from policy_agent import events as policy_events
+        if policy_events.enabled():
+            prompt_ids = next(iter(seq_group.get_seqs())).data.prompt_token_ids
+            prefixes = [str(h) for h in OPT.get_all_token_hash(
+                prompt_ids, self.cache_config.block_size)]
+            policy_events.emit('request_arrived', request_id=request_id,
+                               prompt_tokens_len=len(prompt_ids),
+                               prefix_hashes=prefixes)
+            policy_events.emit('request_admitted', request_id=request_id,
+                               sequence_ids=[s.seq_id for s in seq_group.get_seqs()],
+                               prompt_tokens_len=len(prompt_ids),
+                               prefix_hashes=prefixes)
         if GLOBAL_SIMULATOR_CONFIG.eviction_policy in ("OPT-Online",
                                                        "SimpleHYBRID-OPT"):
             GLOBAL_ONLINE_OPT_HELPER._add_processed_request(seq_group)
@@ -1483,6 +1522,12 @@ class LLMEngine:
                 execute_model_req.async_callback = self.async_callbacks[
                     virtual_engine]
 
+            from policy_agent import events as policy_events
+            if policy_events.enabled():
+                policy_events.emit('engine_iteration', boundary='start',
+                                   prefill_counter=OPT.PREFILL_CNT,
+                                   request_ids=[d.request_id for d in seq_group_metadata_list],
+                                   prefill_request_ids=[d.request_id for d in seq_group_metadata_list if d.is_prompt])
             try:
                 if os.getenv("COLLECT_TRACE", "0") == "1":
                     # print("iter", self.iter_cnt)
@@ -1500,6 +1545,10 @@ class LLMEngine:
                             if cur_iter != {}:
                                 self.trace_data[OPT.PREFILL_CNT] = cur_iter
                             OPT.PREFILL_CNT += 1
+                            from policy_agent import events as policy_events
+                            if policy_events.enabled():
+                                policy_events.emit('prefill_progress',
+                                                   prefill_counter=OPT.PREFILL_CNT)
 
                 if GLOBAL_SIMULATOR_CONFIG.disable_simulation:
                     outputs = self.model_executor.execute_model(
@@ -1596,6 +1645,17 @@ class LLMEngine:
             for data in seq_group_metadata_list:
                 if data.is_prompt:
                     OPT.PREFILL_CNT += 1
+        from policy_agent import events as policy_events
+        if policy_events.enabled():
+            policy_events.emit('engine_iteration', boundary='end',
+                               prefill_counter=OPT.PREFILL_CNT,
+                               prefill_request_ids=[d.request_id for d in seq_group_metadata_list if d.is_prompt])
+            finished = getattr(self, '_policy_finished_requests', set())
+            self._policy_finished_requests = finished
+            for output in ctx.request_outputs:
+                if output.finished and output.request_id not in finished:
+                    finished.add(output.request_id)
+                    policy_events.emit('request_finished', request_id=output.request_id)
         return ctx.request_outputs
 
     def _abort_and_cache_schedule(

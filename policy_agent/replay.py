@@ -4,6 +4,24 @@ import os
 from pathlib import Path
 import runpy
 import sys
+
+# Validate startup-only mode in the same isolated runtime before constructing an
+# engine. NONE is a real disabled-cache control, not repeated idle-block eviction.
+if os.environ.get('UNICACHE_POLICY_INTERFACE') == 'v2':
+    from policy_agent.v2_bridge import V2Remote
+    def cli_value(name, default):
+        return sys.argv[sys.argv.index(name)+1] if name in sys.argv else default
+    source = Path(os.environ['UNICACHE_POLICY_CANDIDATE']).read_text()
+    probe = V2Remote(source, {'api_version':2,
+                            'capacity':int(cli_value('--simulator-num-gpu-blocks', 50000)),
+                            'block_size':int(cli_value('--block-size', 8)), 'cache_id':'gpu:0'})
+    try:
+        mode = probe.initial['cache_mode']
+    finally:
+        probe.close()
+    if mode == 'disabled' and '--enable-prefix-caching' in sys.argv:
+        sys.argv.remove('--enable-prefix-caching')
+
 from vllm.simulator.simulator import Simulator
 
 original = Simulator._maybe_schedule_next_turn
