@@ -7,4 +7,9 @@ export MPLCONFIGDIR="$PWD/.cache/matplotlib"
 export VLLM_CACHE_ROOT="$PWD/.cache/vllm"
 export VLLM_CONFIG_ROOT="$PWD/.cache/vllm-config"
 mkdir -p "$MPLCONFIGDIR" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT"
-exec .venv/bin/python scripts/hit_ratio_matrix.py "$@"
+SIMULATOR_PYTHON="${SIMULATOR_PYTHON:-$PWD/.venv-sim312/bin/python}"
+if [[ ! -x "$SIMULATOR_PYTHON" ]]; then
+  echo 'Missing Python 3.12 simulator environment. Run bash setup-simulator312.sh first.' >&2
+  exit 1
+fi
+exec "$SIMULATOR_PYTHON" scripts/hit_ratio_matrix.py "$@"

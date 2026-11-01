@@ -1,5 +1,23 @@
 # Hit-ratio matrix
 
+The matrix uses a separate Python 3.12 environment. This avoids Python 3.10's
+process-dependent `hash(None)`, which makes the released OPT future-use maps
+incompatible between profile and replay processes. No block-hashing or eviction
+implementation changes are needed; `PYTHONHASHSEED=0` remains required.
+
+Create the environment once (requires internet for dependencies):
+
+```bash
+bash setup-simulator312.sh
+.venv-sim312/bin/python scripts/check_opt_hashes.py
+```
+
+This preserves `.venv` (Python 3.10). The setup uses the existing dependency
+pins and installs the local source without native kernels. Prepared datasets
+and model metadata must already exist locally. Each new matrix invocation
+regenerates OPT profiles; do not reuse maps from Python 3.10. Previously
+reported OPT rows from the Python 3.10 environment are invalid.
+
 Run from the UniCache repository root; no environment activation is needed:
 
 ```bash
@@ -22,7 +40,9 @@ bash scripts/run-hit-ratio-matrix.sh --jobs 2
 ```
 
 `--jobs N` bounds simultaneous replays across both policies and workloads.
-It defaults to 1 for serial execution. Each replay has an independent process,
+It defaults to 1 for serial execution. The launcher defaults to
+`.venv-sim312/bin/python`; `SIMULATOR_PYTHON` can override the interpreter,
+but the runner rejects Python below 3.12 when OPT is selected. Each replay has an independent process,
 log, output directory, and writable plotting/vLLM caches. Start with 2 on a
 Mac; larger values require more RAM because every process loads its own data
 and Python environment. Parallel execution changes wall-clock runtime; the
@@ -46,7 +66,7 @@ Orchestration checks (synthetic summaries and a small cancellation subprocess;
 no actual simulation):
 
 ```bash
-.venv/bin/python scripts/test_hit_ratio_matrix.py
+.venv-sim312/bin/python scripts/test_hit_ratio_matrix.py
 ```
 
 ## Output

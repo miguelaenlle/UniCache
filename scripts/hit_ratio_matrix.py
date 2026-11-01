@@ -146,6 +146,9 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='Inspect inputs; do not run simulations')
     parser.add_argument('--output', help='Fresh output directory')
     args = parser.parse_args()
+    if 'OPT' in args.policies and sys.version_info < (3, 12):
+        parser.error('OPT profiles require Python 3.12 for stable cross-process block hashes. '
+                     'Run bash setup-simulator312.sh and use scripts/run-hit-ratio-matrix.sh.')
     os.chdir(ROOT)
     if args.gpu_blocks <= 0 or args.max_records is not None and args.max_records <= 0:
         parser.error('Block and session counts must be positive')
@@ -172,6 +175,7 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     manifest = {
         'arguments': vars(args), 'configs': configs,
+        'python_version': sys.version, 'python_executable': sys.executable,
         'upstream_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
         'dataset_sha256': {t['data_path']: checksum(t['data_path'])
                            for c in configs.values() for t in c['tasks']},
