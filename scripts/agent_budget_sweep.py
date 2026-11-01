@@ -3,13 +3,13 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 from datetime import datetime
-import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -86,7 +86,7 @@ def baselines(out, blocks, trace):
             print(f'BASELINE {blocks}/{trace}/{policy}/{split}: {score["token_weighted_hit_ratio"]:.4%}', flush=True)
 
 
-def run_one(out, blocks, trace, cap, coding_model):
+def run_one(out, blocks, trace, cap, coding_model, normal_auth=False):
     # Host-only cache adapter: candidate replays ALWAYS execute normally.
     original = runner.Evaluator.replay
     def replay(self, policy, split, folder, candidate=None, use_map=None):
@@ -102,10 +102,20 @@ def run_one(out, blocks, trace, cap, coding_model):
                 '--serving_model','llama-3.2-1b-instruct','--coding_model',coding_model,
                 '--start-policy','LRU','--compare','all','--require-baselines','OPT',
                 '--max-submissions',str(cap),'--gpu-blocks',str(blocks)]
+    if normal_auth:sys.argv.append('--normal-cli-auth')
     runner.main()
 
 
-def agent(out, blocks, trace, cap, coding_model):
+def agent(out, blocks, trace, cap, coding_model, normal_auth=False, wait=False):
+    deadline=time.monotonic()+8*3600
+    while not all(cache_path(out,blocks,trace,p,s).exists()
+                  for p in runner.ALL_POLICIES for s in ['tune','eval']):
+        if not wait:raise RuntimeError(f'Baselines pending for {blocks}/{trace}')
+        completion=out/'baselines-completion.json'
+        if completion.exists() and not json.loads(completion.read_text())['complete']:
+            raise RuntimeError('Baseline stage failed; inspect baselines-completion.json')
+        if time.monotonic()>deadline:raise TimeoutError('Baseline wait exceeded 8 hours')
+        time.sleep(10)
     record = out/'agent-runs'/str(blocks)/(trace+'.json')
     if record.exists():
         validate(read_run(Path(json.loads(record.read_text())['run'])))
@@ -115,6 +125,7 @@ def agent(out, blocks, trace, cap, coding_model):
     command = [sys.executable, str(Path(__file__).resolve()), '--stage','run-one',
                '--output',str(out),'--blocks',str(blocks),'--traces',trace,
                '--max-submissions',str(cap),'--coding-model',coding_model]
+    if normal_auth:command.append('--normal-cli-auth')
     print(f'AGENT START {blocks}/{trace}; progress: {log}', flush=True)
     with log.open('w') as f:
         completed = subprocess.run(command, cwd=ROOT, env=os.environ.copy(),
@@ -199,19 +210,22 @@ def main():
     p.add_argument('--jobs',type=int,default=4)
     p.add_argument('--max-submissions',type=int,default=30)
     p.add_argument('--coding-model',default='claude:opus')
+    p.add_argument('--normal-cli-auth',action='store_true')
+    p.add_argument('--wait-for-baselines',action='store_true',help='Agent stage waits for each case while baseline stage runs separately')
     a=p.parse_args();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
     if a.jobs<1 or min(a.blocks)<1:p.error('Positive jobs and budgets required')
     os.environ.update(PYTHONHASHSEED='0',VLLM_USE_V1='0',VLLM_NO_USAGE_STATS='1',
                       HF_HUB_OFFLINE='1',TOKENIZERS_PARALLELISM='false',MPLBACKEND='Agg',
                       OMP_NUM_THREADS='1',OPENBLAS_NUM_THREADS='1',VECLIB_MAXIMUM_THREADS='1')
-    if a.stage=='run-one':return run_one(out,a.blocks[0],a.traces[0],a.max_submissions,a.coding_model)
+    if a.stage=='run-one':return run_one(out,a.blocks[0],a.traces[0],a.max_submissions,a.coding_model,a.normal_cli_auth)
     identity={'blocks':a.blocks,'traces':a.traces,'source_digest':source_digest(),
               'coding_model':a.coding_model,'max_submissions':a.max_submissions,
               'git_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
               'interface':'v1','baseline_policies':runner.ALL_POLICIES}
     manifest=out/'manifest.json'
     if manifest.exists():
-        if json.loads(manifest.read_text())!=identity:raise ValueError('Experiment identity changed; use a new output folder')
+        stored=json.loads(manifest.read_text())
+        if {k:stored[k] for k in identity}!=identity:raise ValueError('Experiment identity changed; use a new output folder')
     else:
         for trace in a.traces:
             configs,expected,m=runner.prepare(SimpleNamespace(trace=trace,sessions=None))
@@ -221,9 +235,9 @@ def main():
     cases=[(b,t) for b in a.blocks for t in a.traces]
     for stage in (['baselines','agents'] if a.stage=='all' else [a.stage]):
         if stage=='report':continue
-        if stage=='agents' and not any(os.environ.get(k) for k in ['ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN']):
+        if stage=='agents' and not a.normal_cli_auth and not any(os.environ.get(k) for k in ['ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN']):
             raise RuntimeError('Agent stage requires normal exported ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN; no credentials are read from other sources')
-        fn=(lambda b,t:baselines(out,b,t)) if stage=='baselines' else (lambda b,t:agent(out,b,t,a.max_submissions,a.coding_model))
+        fn=(lambda b,t:baselines(out,b,t)) if stage=='baselines' else (lambda b,t:agent(out,b,t,a.max_submissions,a.coding_model,a.normal_cli_auth,a.wait_for_baselines))
         errors=[]
         with ThreadPoolExecutor(max_workers=a.jobs) as pool:
             futures={pool.submit(fn,b,t):(b,t) for b,t in cases}

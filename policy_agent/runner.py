@@ -288,10 +288,15 @@ def claude_command(sandbox, coding_model):
     if not claude:
         raise RuntimeError('Claude CLI not installed')
     env = {'PATH':f'{sandbox / "bin"}:/usr/bin:/bin:/opt/homebrew/bin',
-           'HOME':str(sandbox/'home'),'TMPDIR':str(sandbox/'tmp'), 'PYTHONNOUSERSITE':'1'}
+           'HOME':os.environ['HOME'] if os.environ.get('UNICACHE_NORMAL_CLI_AUTH')=='1' else str(sandbox/'home'),
+           'TMPDIR':str(sandbox/'tmp'), 'PYTHONNOUSERSITE':'1'}
     for key in ['ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN']:
         if os.environ.get(key):
             env[key] = os.environ[key]
+    if os.environ.get('UNICACHE_NORMAL_CLI_AUTH')=='1':
+        # Normal OS account context lets Claude retrieve its own login normally.
+        for key in ['USER','LOGNAME','SHELL','__CF_USER_TEXT_ENCODING']:
+            if key in os.environ:env[key]=os.environ[key]
     cmd = [claude,'--print','--output-format','stream-json','--verbose','--model',coding_model.split(':',1)[1],
            '--restricted','--safe-mode','--no-session-persistence','--debug-file','/dev/null','--permission-mode','dontAsk','--permission-prompts','none','--setting-sources','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
            '--tools','Read,Edit,Write,Bash','--allowedTools','Read,Edit,Write,Bash(python submit.py *),Bash(python smoke_test.py),Bash(python run_local.py *)',
@@ -311,6 +316,7 @@ def main():
     p.add_argument('--require-baselines', nargs='+', choices=ALL_POLICIES, default=[], help='Do not start Claude unless these baselines pass both splits')
     p.add_argument('--max-submissions', type=int, default=30)
     p.add_argument('--debug', action='store_true', help='Save the full Claude event stream to claude.log')
+    p.add_argument('--normal-cli-auth', action='store_true', help='Use normal Claude login through HOME; safe-mode/restricted still disable personal context and confine tools')
     p.add_argument('--prepare-only', action='store_true', help='Build sandbox and splits without simulations or Claude')
     p.add_argument('--sessions', type=int, help='Explicit source subset override; default authors standalone limit (1000)')
     p.add_argument('--gpu-blocks', type=int, default=50000)
@@ -328,7 +334,12 @@ def main():
         p.error('Use the Python 3.12 simulator environment')
     if not Path('/usr/bin/sandbox-exec').exists():
         p.error('V1 currently requires macOS Seatbelt; no unsafe fallback')
-    if not args.prepare_only and not (os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')):
+    if args.normal_cli_auth:
+        auth = subprocess.run(['claude','auth','status'],capture_output=True,text=True)
+        if auth.returncode or not json.loads(auth.stdout).get('loggedIn'):
+            p.error('Normal Claude login unavailable; run claude auth login first')
+        os.environ['UNICACHE_NORMAL_CLI_AUTH']='1'
+    if not args.prepare_only and not args.normal_cli_auth and not (os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')):
         p.error('Export ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN for the isolated Claude CLI, or use --prepare-only')
     configs, expected, manifest = prepare(args)
     stamp = datetime.now(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d/%H%M%S-%f')
@@ -354,7 +365,7 @@ def main():
           'git_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
           'python':sys.version, 'model_checksums':{str(x.relative_to(ROOT)):digest(x) for x in (ROOT/'models/Llama-3.2-1B-Instruct').glob('*.json')},
           'limitations':['Eviction controller retains starting-policy tracking hooks; None delegates unchanged.',
-                        'Claude uses restricted tool permissions, not OS isolation; web tools disabled and Bash limited to submission and offline local-test clients. API network remains available.',
+                        'Claude uses restricted tool permissions, not OS isolation; web tools disabled and Bash limited to submission and offline local-test clients. API network remains available. Explicit normal-cli-auth uses normal HOME for CLI authentication; safe-mode disables personal instructions.',
                         'Worker has CPU and callback deadlines; strict resident-memory cap not implemented.',
                         'Original virtual-time gap generation is completion-relative, not a fixed wall-clock replay.']})
     print(f'Results: {out}', flush=True)
