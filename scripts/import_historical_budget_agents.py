@@ -32,6 +32,7 @@ def verify_code(commit):
 
 def import_run(study,source):
     run=Path(source);data=sweep.read_run(run);record=sweep.validate(data)
+    barrier=sweep.verify_feedback_barrier(run)
     meta=json.loads(data['run.json']);args=meta['args'];trace=args['trace'];blocks=args['gpu_blocks']
     if (blocks,args['start_policy'],args['coding_model'],args['max_submissions'])!=(50000,'LRU','claude:opus',30):
         raise ValueError('Historical settings differ')
@@ -75,6 +76,7 @@ def import_run(study,source):
     sweep.write(target,{'run':str(snapshot),'source_run':str(run),
                        'selected':record['selected'],'attempts':record['attempts'],
                        'reused_historical_coding':True,'historical_git_commit':meta['git_commit'],
+                       'feedback_barrier':barrier,
                        'fresh_replay':replay_scores,
                        'checks':['source checksum','split token checksums','normalized configs and frozen arrivals',
                                  'simulator/controller source parity','evaluator/prepare/prompt/API AST parity',

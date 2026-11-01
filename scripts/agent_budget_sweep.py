@@ -30,13 +30,15 @@ class ProgressOnly:
               'Starting ','Finished.','HEARTBEAT ','ERROR:','Local test: ')
 
     def __init__(self,stream):
-        self.stream=stream;self.buffers={};self.lock=threading.RLock()
+        self.stream=stream;self.buffers={};self.lock=threading.RLock();self.run_path=None
 
     def write(self,value):
         with self.lock:
             key=threading.get_ident();text=self.buffers.get(key,'')+value
             lines=text.split('\n');self.buffers[key]=lines.pop()
             for line in lines:
+                if self.run_path is None and line.startswith('Results: '):
+                    self.run_path=Path(line.split('Results: ',1)[1].strip())
                 if line.startswith(self.prefixes):self.stream.write(line+'\n')
         return len(value)
 
@@ -82,6 +84,19 @@ def prepared(out, trace):
     return {k:Path(v) for k,v in item['configs'].items()},item['expected'],item['manifest']
 
 
+def verify_feedback_barrier(run):
+    """A CLI exit while submit.py still waits is not completed optimization."""
+    # artifacts() rewrites private submissions.jsonl during finalization AFTER
+    # stop.json even on healthy runs; only delivery/history timestamps are valid.
+    files=[run/'sandbox/history.jsonl',
+           *list((run/'sandbox/feedback').glob('submission-*.json'))]
+    latest=max(p.stat().st_mtime for p in files if p.exists())
+    stopped=(run/'stop.json').stat().st_mtime
+    if stopped<latest:
+        raise ValueError('agent_exited_while_submission_pending: stop preceded final submission feedback')
+    return {'passed':True,'stop_after_final_feedback_seconds':stopped-latest}
+
+
 def baselines(out, blocks, trace):
     configs, expected, manifest = prepared(out,trace)
     evaluator = runner.Evaluator(SimpleNamespace(gpu_blocks=blocks), out, configs, expected)
@@ -108,7 +123,7 @@ def baselines(out, blocks, trace):
 
 
 def run_one(out, blocks, trace, cap, coding_model, normal_auth=False):
-    terminal=sys.stdout;sys.stdout=ProgressOnly(terminal)
+    terminal=sys.stdout;progress=ProgressOnly(terminal);sys.stdout=progress
     # Each coding case owns its process group so the deadline can stop only its
     # own runner/Claude/worker descendants. No other experiment process is killed.
     if os.getpgrp()!=os.getpid():os.setsid()
@@ -131,6 +146,13 @@ def run_one(out, blocks, trace, cap, coding_model, normal_auth=False):
             return score, parent
         return original(self, policy, split, folder, candidate=candidate, use_map=use_map)
     runner.Evaluator.replay = replay
+    command=runner.claude_command
+    def synchronous_command(sandbox,model):
+        cmd,env=command(sandbox,model)
+        env.update(CLAUDE_CODE_DISABLE_BACKGROUND_TASKS='1',
+                   BASH_DEFAULT_TIMEOUT_MS='1800000',BASH_MAX_TIMEOUT_MS='1800000')
+        return cmd,env
+    runner.claude_command=synchronous_command
     # Freeze splits once before any parallel replay. Never rewrite files in use.
     runner.prepare = lambda args:prepared(out,trace)
     sys.argv = ['policy-agent','run','--trace',trace,
@@ -141,6 +163,7 @@ def run_one(out, blocks, trace, cap, coding_model, normal_auth=False):
     try:runner.main()
     finally:
         done.set();sys.stdout.flush();sys.stdout=terminal
+    if progress.run_path is not None:verify_feedback_barrier(progress.run_path)
 
 
 def agent(out, blocks, trace, cap, coding_model, normal_auth=False, wait=False):
@@ -171,8 +194,9 @@ def agent(out, blocks, trace, cap, coding_model, normal_auth=False, wait=False):
     if completed.returncode or len(runs) != 1:
         raise RuntimeError(f'Agent failed ({completed.returncode}): {log}')
     validated = validate(read_run(Path(runs[0])))
+    barrier=verify_feedback_barrier(Path(runs[0]))
     write(record, {'run':runs[0], 'selected':validated['selected'],
-                   'attempts':validated['attempts'], 'command':command})
+                   'attempts':validated['attempts'], 'command':command,'feedback_barrier':barrier})
     print(f'AGENT DONE {blocks}/{trace}: {validated["attempts"]}/{cap} attempts', flush=True)
 
 

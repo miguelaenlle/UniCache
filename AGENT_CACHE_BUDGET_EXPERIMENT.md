@@ -74,6 +74,16 @@ Each active coding case prints a heartbeat every 30 seconds and has a two-hour
 wall-clock deadline. On deadline, its own process group is terminated and the case
 is reported as failed, not as a completed optimization result.
 
+Submission commands run synchronously: the CLI receives
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` and both `BASH_DEFAULT_TIMEOUT_MS` and
+`BASH_MAX_TIMEOUT_MS` set to `1800000`. These are supported
+[Claude Code environment settings](https://code.claude.com/docs/en/env-vars).
+This prevents a long replay being backgrounded while the coding model exits before
+seeing its feedback. A zero CLI exit code is insufficient: stop time must follow the
+last submission's feedback/history update, otherwise the optimization is rejected
+as `agent_exited_while_submission_pending` and must be retried. Historical runs must
+pass the same check before reuse.
+
 For this study, five existing 50,000-block coding runs can be reused after strict
 verification and fresh selected-policy replays; only the other 15 coding runs are
 new. Before the agent stage, run:
