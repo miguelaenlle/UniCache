@@ -12,6 +12,43 @@ the authors' source requires UCSD access. No substitute dataset is used.
 
 The runner does not modify eviction policies or report estimated QTTFT.
 
+## Parallel execution
+
+Run all five available workloads and all eight policies with up to two
+simulator processes at a time:
+
+```bash
+bash scripts/run-hit-ratio-matrix.sh --jobs 2
+```
+
+`--jobs N` bounds simultaneous replays across both policies and workloads.
+It defaults to 1 for serial execution. Each replay has an independent process,
+log, output directory, and writable plotting/vLLM caches. Start with 2 on a
+Mac; larger values require more RAM because every process loads its own data
+and Python environment. Parallel execution changes wall-clock runtime; the
+virtual-time configuration, random seeds, cache budgets, and policies stay the same.
+
+For offline OPT, each workload's uncached (`NONE`) trace-collection pass
+must succeed before that workload's OPT replay starts. Other policies can run
+while trace collection is in progress. A failed profile marks its OPT cell
+`ERR` without stopping independent runs. Only the coordinator writes the
+aggregate tables, which update as runs finish.
+
+Ctrl-C or SIGTERM stops active replay process groups and preserves completed
+cells. Unfinished cells remain blank; there is no automatic resume option.
+To validate the selected inputs without launching replays:
+
+```bash
+bash scripts/run-hit-ratio-matrix.sh --jobs 2 --dry-run
+```
+
+Orchestration checks (synthetic summaries and a small cancellation subprocess;
+no actual simulation):
+
+```bash
+.venv/bin/python scripts/test_hit_ratio_matrix.py
+```
+
 ## Output
 
 Each invocation prints a fresh directory under `result/hit-ratio-matrix/`:

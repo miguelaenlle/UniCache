@@ -1,13 +1,17 @@
 """Run upstream policies on the five available workloads and pivot hit ratios."""
 import argparse
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import csv
 from datetime import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
+import threading
 
 import yaml
 
@@ -54,10 +58,87 @@ def save_tables(out, workloads, policies, results):
     (out / 'results.json').write_text(json.dumps(results, indent=2))
 
 
+def run_process(cmd, env, log, cancelled):
+    """Keep each replay in its own process group; stop it on cancellation."""
+    if cancelled.is_set():
+        raise RuntimeError('Run cancelled')
+    process = subprocess.Popen(cmd, env=env, stdout=log,
+                               stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        while not cancelled.is_set():
+            try:
+                return process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                pass
+        raise RuntimeError('Run cancelled')
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+
+
+def run_matrix(workloads, policies, jobs, run_one, record, cancelled):
+    """Bound concurrent subprocesses and release OPT only after its profile."""
+    ready = deque()
+    for workload in workloads:
+        if 'OPT' in policies:
+            ready.append((workload, 'NONE', None))
+        ready.extend((workload, policy, None) for policy in policies if policy != 'OPT')
+    pool = ThreadPoolExecutor(max_workers=jobs)
+    running = {}
+    try:
+        while ready or running:
+            while ready and len(running) < jobs:
+                workload, policy, use_map = ready.popleft()
+                future = pool.submit(run_one, workload, policy, use_map)
+                running[future] = (workload, policy)
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for future in done:
+                workload, policy = running.pop(future)
+                try:
+                    path = future.result()
+                    if policy == 'NONE':
+                        use_map = path.parent / 'use_map.json'
+                        if not use_map.is_file():
+                            raise RuntimeError('Offline OPT use_map.json missing')
+                        ready.appendleft((workload, 'OPT', use_map))
+                    else:
+                        summary = json.loads(path.read_text())
+                        hits = summary['hit_rate_summary']
+                        record(workload, policy, {
+                            'hit_ratio': hits['global_hit_rate'], 'requests': hits['total_requests'],
+                            'hit_tokens': hits['global_hit_tokens_num'], 'prompt_tokens': hits['global_tokens'],
+                            'runtime_seconds': summary['simulation_time'], 'summary': str(path)})
+                except (RuntimeError, OSError, ValueError, KeyError) as error:
+                    if policy == 'NONE':
+                        record(workload, 'OPT', {'error': f'OPT profile failed: {error}'})
+                    else:
+                        record(workload, policy, {'error': str(error)})
+    except BaseException:
+        cancelled.set()
+        for future in running:
+            future.cancel()
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workloads', nargs='+', choices=CATALOG, default=list(CATALOG))
     parser.add_argument('--policies', nargs='+', choices=POLICIES, default=POLICIES)
+    parser.add_argument('--jobs', type=int, default=1,
+                        help='Maximum simultaneous replays across policies and workloads (default: 1)')
     parser.add_argument('--gpu-blocks', type=int, default=50000)
     parser.add_argument('--max-records', type=int, help='Cap each upstream session limit')
     parser.add_argument('--ttft', default='3.9e-05 * (batch_size ** 0.997) * (max_len ** 1.014)')
@@ -68,6 +149,10 @@ def main():
     os.chdir(ROOT)
     if args.gpu_blocks <= 0 or args.max_records is not None and args.max_records <= 0:
         parser.error('Block and session counts must be positive')
+    if args.jobs <= 0:
+        parser.error('--jobs must be positive')
+    if len(set(args.workloads)) != len(args.workloads) or len(set(args.policies)) != len(args.policies):
+        parser.error('Workloads and policies must not contain duplicates')
     configs = {}
     for name in args.workloads:
         config = yaml.safe_load(Path(CATALOG[name]).read_text())
@@ -80,6 +165,7 @@ def main():
         configs[name] = config
         print(f"{name}: {[(t['max_record'], t['data_path']) for t in config['tasks']]}", flush=True)
     print(f'Policies: {args.policies}; blocks: {args.gpu_blocks}; block size: 8', flush=True)
+    print(f'Maximum simultaneous replays: {args.jobs}', flush=True)
     if args.dry_run:
         return
     out = Path(args.output or f"result/hit-ratio-matrix/{datetime.now():%Y%m%d-%H%M%S-%f}").resolve()
@@ -101,7 +187,16 @@ def main():
     save_tables(out, args.workloads, args.policies, results)
     print(f'Results directory: {out}', flush=True)
 
-    def run_one(workload, policy, config_path, use_map=None):
+    cancelled = threading.Event()
+    config_paths = {}
+    for workload, config in configs.items():
+        folder = out / workload
+        folder.mkdir()
+        config_paths[workload] = folder / 'tasks_config.yaml'
+        config_paths[workload].write_text(yaml.safe_dump(config, sort_keys=False))
+
+    def run_one(workload, policy, use_map=None):
+        config_path = config_paths[workload]
         directory = out / workload / policy
         directory.mkdir(parents=True)
         cmd = [sys.executable, '-u', 'run_simulation.py',
@@ -117,48 +212,44 @@ def main():
         if use_map is not None:
             cmd += ['--opt-block-use-map-path', str(use_map)]
         env = dict(os.environ, COLLECT_TRACE='1' if policy == 'NONE' else '0')
+        # Each process has independent simulator state and writable caches.
+        for variable, folder in [('MPLCONFIGDIR', 'matplotlib'), ('VLLM_CACHE_ROOT', 'vllm'),
+                                 ('VLLM_CONFIG_ROOT', 'vllm-config')]:
+            cache = directory / '.cache' / folder
+            cache.mkdir(parents=True)
+            env[variable] = str(cache)
         (directory / 'command.json').write_text(json.dumps(cmd, indent=2))
         print(f'Running {workload}/{policy}; log: {directory / "run.log"}', flush=True)
         with (directory / 'run.log').open('w') as log:
-            status = subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
-        if status.returncode:
-            raise RuntimeError(f'Exit {status.returncode}; see {directory / "run.log"}')
+            status = run_process(cmd, env, log, cancelled)
+        if status:
+            raise RuntimeError(f'Exit {status}; see {directory / "run.log"}')
         summaries = list(directory.glob('*/summary.json'))
         if len(summaries) != 1:
             raise RuntimeError(f'Expected one summary under {directory}')
         return summaries[0]
 
-    for workload, config in configs.items():
-        folder = out / workload
-        folder.mkdir()
-        config_path = folder / 'tasks_config.yaml'
-        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
-        use_map = None
-        profile_error = None
-        if 'OPT' in args.policies:
-            try:
-                profile_summary = run_one(workload, 'NONE', config_path)
-                use_map = profile_summary.parent / 'use_map.json'
-                if not use_map.is_file():
-                    raise RuntimeError('Offline OPT use_map.json missing')
-            except RuntimeError as error:
-                profile_error = str(error)
-        for policy in args.policies:
-            key = f'{workload}/{policy}'
-            try:
-                if policy == 'OPT' and profile_error:
-                    raise RuntimeError(f'OPT profile failed: {profile_error}')
-                path = run_one(workload, policy, config_path, use_map if policy == 'OPT' else None)
-                summary = json.loads(path.read_text())
-                hits = summary['hit_rate_summary']
-                results[key] = {'hit_ratio': hits['global_hit_rate'], 'requests': hits['total_requests'],
-                                'hit_tokens': hits['global_hit_tokens_num'], 'prompt_tokens': hits['global_tokens'],
-                                'runtime_seconds': summary['simulation_time'], 'summary': str(path)}
-                print(f"  {key}: {hits['global_hit_rate']:.4%}", flush=True)
-            except (RuntimeError, KeyError) as error:
-                results[key] = {'error': str(error)}
-                print(f'  FAILED {key}: {error}', flush=True)
-            save_tables(out, args.workloads, args.policies, results)
+    def record(workload, policy, result):
+        # Only the main thread writes the aggregate files.
+        key = f'{workload}/{policy}'
+        results[key] = result
+        if 'error' in result:
+            print(f"  FAILED {key}: {result['error']}", flush=True)
+        else:
+            print(f"  {key}: {result['hit_ratio']:.4%}", flush=True)
+        save_tables(out, args.workloads, args.policies, results)
+
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+
+    old_handler = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        run_matrix(configs, args.policies, args.jobs, run_one, record, cancelled)
+    except KeyboardInterrupt:
+        print(f'Interrupted; completed results preserved in {out}', flush=True)
+        return 130
+    finally:
+        signal.signal(signal.SIGTERM, old_handler)
     print((out / 'hit_ratio_matrix.md').read_text(), flush=True)
     print(f"Matrix: {out / 'hit_ratio_matrix.csv'}", flush=True)
     return int(any('error' in record for record in results.values()))
