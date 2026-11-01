@@ -90,3 +90,15 @@ version and tune-only policy selection. It then requires exact tune/eval score
 reproduction by fresh candidate replays before recording historical reuse. A mismatch
 requires a fresh coding run for that case. Historical dates/attempts/source snapshots
 and fresh verification scores remain explicit in `agent-runs` and `agent-origins.json`.
+
+Reproduce a final selected policy without any Claude/API call:
+
+```bash
+.venv-sim312/bin/python scripts/replay_budget_policy.py --study "$OUT" \
+  --blocks 32768 --trace alfred --output result/replay-alfred-32768
+```
+
+This checks the selected source digest and requires exact recorded tune/eval scores,
+including complete request/token accounting. Run outside a parent sandbox that blocks
+OpenMP. Replaying frozen source is deterministic under the pinned environment; a new
+Opus coding run can produce different policies and stop at a different attempt.

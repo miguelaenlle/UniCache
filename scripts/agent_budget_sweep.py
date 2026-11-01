@@ -221,6 +221,16 @@ def report(out, budgets, traces):
         'Policy selected by tune only; independent cold tune/eval caches. Blank cells mean pending, never zero.',
         'OPT is privileged offline reference headroom, not a guaranteed online-achievable improvement. All comparisons remain hidden from the coding agent.',
         'V1 retains starting-policy-dependent bookkeeping. V2 is a separate experiment.','']
+    model=json.loads((ROOT/'models/Llama-3.2-1B-Instruct/config.json').read_text())
+    head_dim=model.get('head_dim',model['hidden_size']//model['num_attention_heads'])
+    block_bytes=2*model['num_hidden_layers']*model['num_key_value_heads']*head_dim*2*8
+    capacity={'block_tokens':8,'kv_dtype':'float16','bytes_per_block':block_bytes,
+              'budgets':{str(b):{'blocks':b,'modeled_kv_gib':b*block_bytes/2**30} for b in budgets}}
+    write(out/'capacity.json',capacity)
+    md += ['| GPU blocks | Modeled KV capacity |','|---:|---:|',
+           *[f'| {b:,} | {b*block_bytes/2**30:.3f} GiB |' for b in budgets],
+           '',f'Each 8-token FP16 block represents {block_bytes:,} bytes. These are modeled KV capacities, not measured Mac RAM or physical GPU allocations.',
+           'The budgets are the preceding pressure-inducing pilot choices; oversized paper-normalized budgets were mostly saturated.','']
     reused=sum(x['reused_historical_coding'] for x in origins)
     md += [f'Completed coding runs: {len(origins)-reused} fresh, {reused} reused historical runs with freshly verified selected-policy tune/eval replays.',
            'Historical runs retain their original attempts, tune-based selection and source snapshots; they are not counted as new coding runs.',
@@ -245,20 +255,36 @@ def report(out, budgets, traces):
             gained=f'{gain:.3f} pp' if gain is not None else '—'
             part=f'{fraction:.1%}' if fraction is not None else ('n/a' if gain is not None else '—')
             md.append(f'| {blocks:,} | {LABELS[trace]} | {gap:.3f} pp | {gained} | {part} |')
+    md += ['', '![Eval hit ratios across cache budgets](hit-ratio-by-budget.png)',
+           '', 'Coincident curves indicate equal scores; open/different markers distinguish overlapping policies. Best baseline is selected on tune, then plotted on eval.',
+           'Frozen policy replays are reproducible; a fresh Opus coding run may choose different policies or stop at a different attempt. See environment.json for the requested alias and CLI version.',
+           'Any excluded bootstrap launches are explicitly recorded in aborted-coding-runs.json.', '']
     (out/'report.md').write_text('\n'.join(md)+'\n')
     if head:
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
-        fig,axes=plt.subplots(1,len(traces),figsize=(3.4*len(traces),4),squeeze=False)
+        fig,axes=plt.subplots(1,len(traces),figsize=(3.4*len(traces),4.8),squeeze=False)
         for ax,trace in zip(axes[0],traces):
             selected=sorted([r for r in head if r[1]==trace and r[2]=='eval'])
-            for idx,label in [(3,'LRU'),(4,'Offline OPT'),(5,'Agent')]:
+            for idx,label,color,marker,size,style in [
+                (3,'LRU','#4c78a8','o',8,'-'),
+                (11,'Best baseline (tune)','#54a24b','x',4,':'),
+                (5,'Agent','#e45756','+',7,'--'),
+                (4,'Offline OPT','#888888','*',7,'-.')]:
                 xs=[r[0] for r in selected if r[idx] is not None];ys=[100*r[idx] for r in selected if r[idx] is not None]
-                ax.plot(xs,ys,'o-',label=label)
-            ax.set_title(LABELS[trace]);ax.set_xlabel('GPU cache blocks');ax.grid(alpha=.3);ax.tick_params(axis='x',rotation=35)
-        axes[0][0].set_ylabel('Eval token-weighted hit ratio (%)');axes[0][-1].legend()
-        fig.tight_layout();fig.savefig(out/'hit-ratio-by-budget.png',dpi=160);plt.close(fig)
+                ax.plot(xs,ys,label=label,color=color,marker=marker,markersize=size,
+                        markerfacecolor='none' if marker=='o' else color,linestyle=style,linewidth=1.4)
+            uc=sorted((r[0],100*r[4]) for r in rows if r[1:4]==[trace,'eval','UniCache'] and r[4] is not None)
+            ax.plot([x for x,y in uc],[y for x,y in uc],label='UniCache',color='#b279a2',
+                    marker='D',markerfacecolor='none',markersize=6,linestyle='--',linewidth=1)
+            ax.set_title(LABELS[trace]);ax.set_xlabel('GPU cache blocks');ax.grid(alpha=.3)
+            ax.set_xticks(budgets,[f'{b:,}' for b in budgets],rotation=40,ha='right')
+        axes[0][0].set_ylabel('Eval token-weighted hit ratio (%)')
+        handles,labels=axes[0][-1].get_legend_handles_labels()
+        fig.legend(handles,labels,loc='lower center',bbox_to_anchor=(.5,.03),ncol=5,fontsize=9)
+        fig.text(.5,.005,'Overlapping curves mean equal measured scores; best baseline is selected on tune.',ha='center',fontsize=9)
+        fig.tight_layout(rect=[0,.13,1,1]);fig.savefig(out/'hit-ratio-by-budget.png',dpi=160);plt.close(fig)
 
 
 def main():
