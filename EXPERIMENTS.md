@@ -222,3 +222,22 @@ at a time, each with the full main-policy set and both frozen splits. Use a fres
 output root to repeat the complete study without overwriting prior results.
 Each actual run also has `reproduce.json` and a source snapshot; no manual spreadsheet
 editing or undocumented budget selection is required.
+
+Prepared-input portability: the study archives the exact source session prefixes and
+model metadata once under `result/cache-budget-study/2026-11-01/inputs/`, with split
+IDs/configs/hashes. Raw preparation scripts included randomness, so use the archive
+rather than expecting fresh raw preprocessing to reproduce those sessions exactly.
+The archive is about 628 MiB; unused source rows and duplicate split contents are omitted.
+Transfer the study directory to another checkout, install the Python 3.12 environment
+using `bash setup-simulator312.sh`, then verify/restore missing inputs:
+
+```bash
+.venv-sim312/bin/python scripts/restore_budget_study_inputs.py \
+  --study result/cache-budget-study/2026-11-01 --restore-missing
+```
+
+The helper verifies hashes and refuses to overwrite differing existing files. Because
+unused source rows are omitted, the restored full-file source checksum differs from
+the original full dataset, but the consumed session prefix and regenerated frozen
+split bytes match. Every command's outputs use a fresh directory; wall-clock timings
+may vary by machine, whereas request/timing seeds and simulated timing are fixed.
