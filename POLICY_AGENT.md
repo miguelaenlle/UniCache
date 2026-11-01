@@ -151,3 +151,38 @@ A small real simulator preflight (no API calls) is available as:
 ```bash
 .venv-sim312/bin/python scripts/check-agent-traces.py
 ```
+
+## Reproducible summary tables
+
+Create a summary from explicit completed run directories, one per workload:
+
+```bash
+bash scripts/summarize-policy-agent.sh --runs \
+  result/policy-agent/<date>/<sharegpt-run> \
+  result/policy-agent/<date>/<mashqa-run> \
+  result/policy-agent/<date>/<apps-run> \
+  result/policy-agent/<date>/<alfred-run> \
+  result/policy-agent/<date>/<codeparrot-run>
+```
+
+The command never chooses the latest run implicitly. It rejects duplicate workloads,
+mixed models/cache budgets/starting policies, failed runs, inconsistent scores, or a
+final policy that does not match the selected tune-winning snapshot.
+
+Outputs are `eval.csv`, `tune.csv` (policy rows, workload columns; ratios 0–1),
+`summary.md` (percentage tables), and `runs.csv` (attempt counts, selected submission,
+source directories and stop reasons). Each Agent cell represents a different policy
+trained for that workload. Missing/failed values are not replaced with zero.
+
+The summary saves small input snapshots and their SHA256 hashes in `manifest.json`.
+Rebuild using those snapshots, even if original run folders subsequently change:
+
+```bash
+bash scripts/summarize-policy-agent.sh \
+  --manifest result/policy-agent-summary/lru-opus-all/manifest.json
+```
+
+A fresh timestamped output folder is created. Snapshot tampering fails verification.
+The manifest also records the summarizer's code hash. No experiments or API calls are
+performed by the summary command. The completed five-workload batch's initial report
+is `result/policy-agent-summary/lru-opus-all/summary.md`.
