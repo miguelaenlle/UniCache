@@ -241,3 +241,21 @@ unused source rows are omitted, the restored full-file source checksum differs f
 the original full dataset, but the consumed session prefix and regenerated frozen
 split bytes match. Every command's outputs use a fresh directory; wall-clock timings
 may vary by machine, whereas request/timing seeds and simulated timing are fixed.
+
+The headroom-focused study also adds two explicit exploratory counterpoints at
+32,768 blocks, chosen using tune curves only and recorded in decisions.json:
+
+```bash
+bash scripts/run-cache-budget-sweep.sh --jobs 4 --blocks 32768 \
+  --traces mashqa codeparrot \
+  --output result/cache-budget-study/2026-11-01/confirm-counterpoints
+```
+
+These retain the primary selections and measure the tradeoff between demonstrated
+online gains and larger oracle gaps. Generate all tables/graphs only after primary
+and counterpoint confirmations finish:
+
+```bash
+.venv-sim312/bin/python scripts/report_cache_budget_study.py \
+  --study result/cache-budget-study/2026-11-01
+```

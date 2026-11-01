@@ -28,6 +28,23 @@ def report(study):
         rows.extend(records)
         provenance[trace]={'budget_blocks':blocks,'run':str(folder),'manifest_sha256':hashlib.sha256((folder/'manifest.json').read_bytes()).hexdigest(),'selection_evidence':item['evidence']}
         checks[trace]={'all_16_comparisons_passed':True,'LRU_UniCache_OPT_tune_replication_exact':True}
+    extra=study/'confirm-counterpoints'
+    if extra.exists():
+        completion=json.loads((extra/'completion.json').read_text())
+        if not completion['passed'] or completion['completed']!=32:raise ValueError('Counterpoints incomplete')
+        data=json.loads((extra/'results.json').read_text())
+        for trace in ['mashqa','codeparrot']:
+            for policy in ['LRU','SimpleHYBRID','OPT']:
+                key=f'32768blocks/{trace}/tune/{policy}'
+                if data[key]['hit_ratio']!=pilot_results[key]['hit_ratio']:raise ValueError('Counterpoint tune replication mismatch')
+            checks[trace+'-counterpoint']={'all_16_comparisons_passed':True,'LRU_UniCache_OPT_tune_replication_exact':True}
+        with (extra/'headroom.csv').open() as f:
+            for r in csv.DictReader(f):
+                r['gpu_blocks']=int(r['gpu_blocks']);rows.append(r)
+        provenance['counterpoints']={'run':str(extra),'manifest_sha256':hashlib.sha256((extra/'manifest.json').read_bytes()).hexdigest()}
+        (study/'counterpoint_baselines.csv').write_bytes((extra/'hit_ratios.csv').read_bytes())
+    for r in rows:
+        r['configuration']='primary' if r['gpu_blocks']==selection['selections'][r['trace']]['selected']['blocks'] else 'counterpoint'
     columns=list(rows[0])
     for split in ['tune','eval']:
         with (study/f'{split}_headroom.csv').open('w',newline='') as f:
@@ -39,7 +56,7 @@ def report(study):
            '|---|---:|---:|---|---:|---:|---:|---:|']
     for r in evaluations:
         l,b,o=map(float,[r['LRU'],r['best_online_hit_ratio'],r['OPT']])
-        lines.append(f"| {r['trace']} | {r['gpu_blocks']:,} | {l:.3%} | {r['best_online_by_tune']} | {b:.3%} | {o:.3%} | {float(r['online_minus_LRU_pp']):+.3f} | {float(r['OPT_minus_LRU_pp']):+.3f} |")
+        lines.append(f"| {r['trace'] + (' (counterpoint)' if r['configuration']=='counterpoint' else '')} | {r['gpu_blocks']:,} | {l:.3%} | {r['best_online_by_tune']} | {b:.3%} | {o:.3%} | {float(r['online_minus_LRU_pp']):+.3f} | {float(r['OPT_minus_LRU_pp']):+.3f} |")
     lines += ['', '## All baseline eval results', '',
               'Columns use the selected cache budget for each workload; these budgets differ.', '',
               '| Policy | '+' | '.join(selection['selections'])+' |', '|---|'+'---:|'*len(selection['selections'])]
@@ -70,7 +87,7 @@ def report(study):
     lines += ['- '+d['reason'] for d in decisions['decisions']]
     lines += ['- Budget selection used only the complete tune-only pilot. All confirmation eval scores were observed after budget selection.',
               '- Main policies: LRU, LFU, FIFO, LeCaR, ARC, WA, UniCache and offline OPT. No agents or extra models were run.',
-              '- Every selected LRU/UniCache/OPT tune score replicated exactly in the fresh confirmation run. All 80 full-policy confirmations passed request/token accounting checks.',
+              '- Every selected LRU/UniCache/OPT tune score replicated exactly in the fresh confirmation run. All 80 primary full-policy comparisons passed request/token accounting checks; counterpoint verification is recorded separately in verification.json.',
               '- No logged preemption warnings were observed in the pilot; warnings are rate-limited, not exact preemption counts.',
               '', '## Limits', '',
               '- The selector did not read eval data. Prior 50,000-block eval results were already known, so this is not claimed as a new blind holdout study.',
