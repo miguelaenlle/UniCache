@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import signal
+import threading
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -87,6 +89,19 @@ def baselines(out, blocks, trace):
 
 
 def run_one(out, blocks, trace, cap, coding_model, normal_auth=False):
+    # Each coding case owns its process group so the deadline can stop only its
+    # own runner/Claude/worker descendants. No other experiment process is killed.
+    if os.getpgrp()!=os.getpid():os.setsid()
+    done=threading.Event();started=time.monotonic()
+    def heartbeat():
+        while not done.wait(30):
+            print(f'HEARTBEAT {blocks}/{trace}: {(time.monotonic()-started)/60:.1f} minutes; see Submission progress above',flush=True)
+    def deadline():
+        if not done.wait(7200):
+            print('ERROR: 2-hour coding-case deadline exceeded; terminating this case without a valid completed result',flush=True)
+            os.killpg(os.getpgrp(),signal.SIGTERM)
+    threading.Thread(target=heartbeat,daemon=True).start()
+    threading.Thread(target=deadline,daemon=True).start()
     # Host-only cache adapter: candidate replays ALWAYS execute normally.
     original = runner.Evaluator.replay
     def replay(self, policy, split, folder, candidate=None, use_map=None):
@@ -103,7 +118,8 @@ def run_one(out, blocks, trace, cap, coding_model, normal_auth=False):
                 '--start-policy','LRU','--compare','all','--require-baselines','OPT',
                 '--max-submissions',str(cap),'--gpu-blocks',str(blocks)]
     if normal_auth:sys.argv.append('--normal-cli-auth')
-    runner.main()
+    try:runner.main()
+    finally:done.set()
 
 
 def agent(out, blocks, trace, cap, coding_model, normal_auth=False, wait=False):
@@ -140,11 +156,14 @@ def agent(out, blocks, trace, cap, coding_model, normal_auth=False, wait=False):
 
 
 def report(out, budgets, traces):
-    rows=[];head=[]
+    rows=[];head=[];origins=[]
     for blocks in budgets:
         for trace in traces:
             agent_record = out/'agent-runs'/str(blocks)/(trace+'.json')
-            parsed = validate(read_run(Path(json.loads(agent_record.read_text())['run']))) if agent_record.exists() else None
+            item=json.loads(agent_record.read_text()) if agent_record.exists() else None
+            parsed = validate(read_run(Path(item['run']))) if item else None
+            if item:origins.append({'gpu_blocks':blocks,'trace':trace,'run':item['run'],
+                                    'reused_historical_coding':item.get('reused_historical_coding',False)})
             for split in ['tune','eval']:
                 values={}
                 for policy in runner.ALL_POLICIES:
@@ -155,14 +174,25 @@ def report(out, budgets, traces):
                 for policy,value in values.items():rows.append([blocks,trace,split,policy,value])
                 if {'LRU','OPT'}.issubset(values):
                     gap=values['OPT']-values['LRU'];gain=values['Agent']-values['LRU'] if parsed else None
+                    online=[p for p in runner.ALL_POLICIES if p not in ['OPT','NONE']]
+                    tune={p:cached(out,blocks,trace,p,'tune')[0]['token_weighted_hit_ratio']
+                          for p in online if cache_path(out,blocks,trace,p,'tune').exists()}
+                    best=max(online,key=lambda p:tune[p]) if len(tune)==len(online) else None
+                    best_score=values.get(best) if best else None
+                    note=('agent exceeds measured offline reference' if parsed and values['Agent']>values['OPT']+1e-12
+                          else 'nonpositive reference gap' if gap<=0 else '')
                     head.append([blocks,trace,split,values['LRU'],values['OPT'],values['Agent'],
                                  100*gap,100*gain if gain is not None else None,
                                  gain/gap if gain is not None and gap>0 else None,
-                                 parsed['attempts'] if parsed else None])
+                                 parsed['attempts'] if parsed else None,best,best_score,
+                                 100*(best_score-values['LRU']) if best_score is not None else None,
+                                 100*(values['Agent']-best_score) if parsed and best_score is not None else None,note])
     for name,columns,data in [
         ('scores.csv',['gpu_blocks','trace','split','policy','hit_ratio'],rows),
         ('headroom.csv',['gpu_blocks','trace','split','LRU','OPT','Agent','OPT_minus_LRU_pp',
-                         'Agent_minus_LRU_pp','fraction_reference_gain_achieved','attempts'],head)]:
+                         'Agent_minus_LRU_pp','fraction_reference_gain_achieved','attempts',
+                         'best_online_by_tune','best_online_hit_ratio','best_online_minus_LRU_pp',
+                         'Agent_minus_best_online_pp','reference_gap_note'],head)]:
         with (out/name).open('w',newline='') as f:
             w=csv.writer(f);w.writerow(columns);w.writerows(data)
     md=['# V1 agent cache-budget experiment','',
@@ -170,6 +200,11 @@ def report(out, budgets, traces):
         'Policy selected by tune only; independent cold tune/eval caches. Blank cells mean pending, never zero.',
         'OPT is privileged offline reference headroom, not a guaranteed online-achievable improvement. All comparisons remain hidden from the coding agent.',
         'V1 retains starting-policy-dependent bookkeeping. V2 is a separate experiment.','']
+    reused=sum(x['reused_historical_coding'] for x in origins)
+    md += [f'Completed coding runs: {len(origins)-reused} fresh, {reused} reused historical runs with freshly verified selected-policy tune/eval replays.',
+           'Historical runs retain their original attempts, tune-based selection and source snapshots; they are not counted as new coding runs.',
+           'The four explicit budgets are the previous pilot budgets, not paper-normalized A100 fractions.','']
+    write(out/'agent-origins.json',origins)
     for blocks in budgets:
         for split in ['tune','eval']:
             md += [f'## {blocks:,} GPU blocks / {split}','',
@@ -183,8 +218,12 @@ def report(out, budgets, traces):
                 md.append('| '+policy+' | '+' | '.join(cells)+' |')
             md += ['']
     md += ['## Eval headroom','', '| Blocks | Trace | OPT − LRU | Agent − LRU | Fraction of reference gain |', '|---:|---|---:|---:|---:|']
-    for blocks,trace,split,lru,opt,value,gap,gain,fraction,attempts in head:
-        if split=='eval':md.append(f'| {blocks:,} | {LABELS[trace]} | {gap:.3f} pp | '+(f'{gain:.3f} pp | {fraction:.1%} |' if fraction is not None else '— | — |'))
+    for row in head:
+        blocks,trace,split,lru,opt,value,gap,gain,fraction,attempts=row[:10]
+        if split=='eval':
+            gained=f'{gain:.3f} pp' if gain is not None else '—'
+            part=f'{fraction:.1%}' if fraction is not None else ('n/a' if gain is not None else '—')
+            md.append(f'| {blocks:,} | {LABELS[trace]} | {gap:.3f} pp | {gained} | {part} |')
     (out/'report.md').write_text('\n'.join(md)+'\n')
     if head:
         import matplotlib

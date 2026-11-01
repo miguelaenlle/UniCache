@@ -68,3 +68,24 @@ Resume the same command with the same output folder; completed valid baselines a
 agent runs are reused. The experiment rejects changed runtime/input identities. If a
 replay fails partway, inspect its log and move that incomplete replay directory to a
 diagnostic folder before retrying; no failed score is silently treated as zero.
+
+Each active coding case prints a heartbeat every 30 seconds and has a two-hour
+wall-clock deadline. On deadline, its own process group is terminated and the case
+is reported as failed, not as a completed optimization result.
+
+For this study, five existing 50,000-block coding runs can be reused after strict
+verification and fresh selected-policy replays; only the other 15 coding runs are
+new. Before the agent stage, run:
+
+```bash
+.venv-sim312/bin/python scripts/import_historical_budget_agents.py \
+  --study "$OUT" \
+  --summary-manifest /absolute/path/to/policy-agent-summary/lru-opus-all/manifest.json
+```
+
+The importer verifies source/input/model/config checksums, normalized frozen-arrival
+configs, unchanged simulator/controller code, evaluator/prompt/interface ASTs, Python
+version and tune-only policy selection. It then requires exact tune/eval score
+reproduction by fresh candidate replays before recording historical reuse. A mismatch
+requires a fresh coding run for that case. Historical dates/attempts/source snapshots
+and fresh verification scores remain explicit in `agent-runs` and `agent-origins.json`.
