@@ -11,6 +11,12 @@ p.add_argument('--done', action='store_true')
 p.add_argument('--reason')
 a = p.parse_args()
 root = Path(__file__).resolve().parent
+def local_file(path):
+    path = (root/path).resolve()
+    if not path.is_relative_to(root):
+        p.error('Input files must remain inside the coding workspace')
+    return path
+
 if a.done:
     if not a.reason:
         p.error('--done requires --reason')
@@ -18,10 +24,10 @@ if a.done:
 else:
     if not a.rationale_file:
         p.error('--rationale-file is required')
-    rationale = Path(a.rationale_file).read_text().strip()
+    rationale = local_file(Path(a.rationale_file)).read_text().strip()
     if not rationale:
         p.error('rationale must not be empty')
-    request = {'source': (root / 'policy.py').read_text(), 'rationale': rationale}
+    request = {'source': local_file(Path('policy.py')).read_text(), 'rationale': rationale}
 key = uuid.uuid4().hex
 pending = root / 'requests' / (key + '.tmp')
 pending.write_text(json.dumps(request))

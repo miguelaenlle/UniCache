@@ -23,6 +23,12 @@ confined to the coding workspace. Submitted policies and custom tests retain the
 separate offline Seatbelt sandbox. The coding CLI uses tool restrictions, not an OS
 sandbox.
 
+The permitted Python client commands also run through a small trusted launcher
+outside the editable workspace. They can exchange submission/feedback files, but
+cannot read private evaluator files, inherit API credentials, use the network or
+replace their Python entry point. This preserves the existing submit/smoke/local-test
+commands even if a client script is edited.
+
 ```bash
 ./policy-agent run \
   --trace sharegpt \

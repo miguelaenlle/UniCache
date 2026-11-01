@@ -317,6 +317,7 @@ def claude_command(sandbox, coding_model):
     cmd = [claude,'--print','--output-format','stream-json','--verbose','--model',coding_model.split(':',1)[1],
            '--restricted','--safe-mode','--no-session-persistence','--debug-file','/dev/null','--permission-mode','dontAsk','--permission-prompts','none','--setting-sources','','--strict-mcp-config','--mcp-config','{"mcpServers":{}}',
            '--tools','Read,Edit,Write,Bash','--allowedTools','Read,Edit,Write,Bash(python submit.py *),Bash(python smoke_test.py),Bash(python run_local.py *)',
+           '--disallowedTools','Edit(./bin/**),Write(./bin/**),Edit(./bin),Write(./bin)',
            '--append-system-prompt',(sandbox/'prompt.md').read_text(),
            'Read policy_api.md, run_context.json and policy.py. Follow the task prompt.']
     return cmd, env
@@ -367,8 +368,9 @@ def main():
     sandbox = out/'sandbox'
     for name in ['feedback', 'requests', 'home', 'tmp', 'bin', 'tests', 'local-output']:
         (sandbox/name).mkdir(parents=True, exist_ok=True)
-    (sandbox/'bin/python').symlink_to(Path(sys.executable).resolve())
     (out/'internal').mkdir()
+    from policy_agent.client_python import install_client_python
+    install_client_python(sandbox)
     for name in ['submit.py', 'local_client.py', 'run_local.py', 'smoke_test.py']:
         shutil.copyfile(ROOT/'policy_agent'/name, sandbox/name)
     if args.policy_interface == 'v2':
@@ -446,9 +448,16 @@ def main():
         while not stop.is_set():
             for request in sorted((sandbox/'requests').glob('*.json')):
                 response = sandbox/'feedback'/request.name
+                # Spool directories are writable by clients. Never follow a
+                # symlink they create into private evaluator files.
+                if not response.resolve().is_relative_to(sandbox.resolve()):
+                    print('ERROR: feedback path leaves the coding workspace', flush=True)
+                    continue
                 if response.exists():
                     continue
                 try:
+                    if not request.resolve().is_relative_to(sandbox.resolve()):
+                        raise ValueError('Request path leaves the coding workspace')
                     if request.stat().st_size > 1024*1024:
                         raise ValueError('Request exceeds 1 MiB')
                     if request.is_symlink():

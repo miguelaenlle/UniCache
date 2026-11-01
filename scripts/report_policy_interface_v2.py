@@ -20,6 +20,8 @@ def main():
     ap.add_argument('--pressure-dirs',nargs='*',default=['frozen-cd2e82e-real-pressure','frozen-cd2e82e-code-pressure'])
     ap.add_argument('--postgate-code-dir',default='startup-4db0ee6-code')
     ap.add_argument('--postgate-shadow-dir',default='startup-4db0ee6-shadow')
+    ap.add_argument('--final-code-dir',default='final-e9a6d16-code')
+    ap.add_argument('--final-shadow-dir',default='final-e9a6d16-shadow')
     args=ap.parse_args()
     matrix=Path(args.matrix_dir)
     if not matrix.is_absolute():matrix=args.root/matrix
@@ -70,9 +72,36 @@ def main():
         'cases_recorded':len(postrows),'expected_cases':16,
         'passed':len(postrows)==16 and all(r['status']=='ok' for r in postrows) and not discrepancies,
         'byte_identical_ledger_comparisons':ledgerfiles-len(discrepancies),'ledger_discrepancies':discrepancies}
+    finalrows=[]
+    finaldiscrepancies=[]
+    finalledgers=0
+    finalrevision=None
+    changedsources=0
+    for newname,oldname in [(args.final_code_dir,'frozen-cd2e82e-code-pressure'),(args.final_shadow_dir,'frozen-cd2e82e-shadow')]:
+        new=Path(newname)
+        if not new.is_absolute():new=args.root/new
+        old=args.root/oldname
+        if (new/'manifest.json').exists():finalrevision=json.loads((new/'manifest.json').read_text()).get('git_head')
+        for row in read_rows(new):
+            finalrows.append(row)
+            case=Path(row['case'])/row['policy']
+            originalrow=json.loads((old/case/'comparison.json').read_text())
+            changedsources += row.get('source_sha256') != originalrow.get('source_sha256')
+            for mode in ['native','v2']+(['shadow'] if row.get('shadow_checked') else []):
+                before=old/case/mode/'decisions.jsonl'
+                after=new/case/mode/'decisions.jsonl'
+                if (before.read_bytes() if before.exists() else b'') != (after.read_bytes() if after.exists() else b''):
+                    finaldiscrepancies.append(str(case/mode))
+                finalledgers+=1
+    verification['final_reset_aware_surface']={'runtime_revision':finalrevision,'reference_runtime_revision':commit,
+        'cases_recorded':len(finalrows),'expected_cases':16,
+        'passed':len(finalrows)==16 and all(r['status']=='ok' for r in finalrows) and not finaldiscrepancies and changedsources==16,
+        'byte_identical_ledger_comparisons':finalledgers-len(finaldiscrepancies),
+        'sources_changed_for_new_reset_handler':changedsources,'ledger_discrepancies':finaldiscrepancies}
     (args.root/'verification.json').write_text(json.dumps(verification,indent=2))
-    lines=['# Policy interface v2 verification','',f'Runtime revision: `{commit}`.', '',
+    lines=['# Policy interface v2 verification','',f'Core parity runtime revision: `{commit}`.', '',
            f"Verification: {'PASS' if verified and stable and real_pressure else 'IN PROGRESS'}; {len(combined)}/112 cases; {verification['matched_evictions']:,} matched eviction decisions.", '',
+           f'Final reset-aware surface revision: `{finalrevision}`; separate targeted regressions are recorded below.', '',
            'This validates editable reference implementations, not LLM rediscovery or improved hit ratios.',
            'Every independent v2 replay uses the same host LRU route; only the standalone `policy.py` changes.',
            'Each policy owns its tracking, histories, numerical models, weights and eviction decisions.',
@@ -118,11 +147,20 @@ def main():
               'This separate check validates the mode-only startup handshake and eager initialization with',
               'the full environment context. Policy algorithms and archived candidate sources are unchanged.',
               'It supplements the 112-case core gate rather than relabelling that gate as a newer revision.', '']
+    final=verification['final_reset_aware_surface']
+    lines += ['', '## Final reset-aware surface regression', '',
+              f"Final surface revision: `{finalrevision}`. {len(finalrows)}/16 freshly generated configurations recorded; "+('PASS.' if final['passed'] else 'in progress.'),
+              f"{final['byte_identical_ledger_comparisons']} native/v2/shadow ledger comparisons are byte-identical to the core gate.",
+              f"All {changedsources} candidate source hashes changed as expected to include the new raw `cache_reset` handler.",
+              'These cases verify ordinary replay decisions remain unchanged. Actual reset boundaries and',
+              'preservation of global learned fits/hit windows/known requests have separate reset integration',
+              'and persistence tests in the v2 unit suites. The private core gate remains pinned to its',
+              'original revision; the protocol and reset-aware extensions are recorded separately.', '']
     lines += ['', 'Shadow runs retain native tracker behavior and native decisions. An isolated copy receives only',
               'the public facts and must propose the same victim at every native decision. Independent runs',
               'also exercise the new policy-neutral tracker route and its feedback on subsequent requests.', '',
               '## Reproduce','', 'From the repository root, with the existing local datasets/model metadata and simulator environment:', '', '```bash',
-              '.venv-sim312/bin/python -m unittest policy_agent.test_v2_policies -v',
+              '.venv-sim312/bin/python -m unittest policy_agent.test_v2_policies policy_agent.test_v2_worker policy_agent.test_v2_lifecycle policy_agent.test_v2_numerics -v',
               'bash scripts/test-policy-interface-v2.sh --sessions 64 --jobs 4 --max-num-seqs 32 --output result/policy-interface-v2/reproduce-fixed',
               'bash scripts/test-policy-interface-v2.sh --traces --policies UniCache ARC LeCaR WA --jobs 2 --shadow --max-num-seqs 4 --output result/policy-interface-v2/reproduce-shadow',
               'bash scripts/test-policy-interface-v2.sh --traces mashqa agentbank-apps --sessions 64 --gpu-blocks 512 --max-num-seqs 1 --jobs 4 --no-mixed --output result/policy-interface-v2/reproduce-pressure',
@@ -131,6 +169,11 @@ def main():
               'To reproduce from archived records and policy sources, without re-preparing the original datasets:', '',
               '```bash',
               'bash scripts/test-policy-interface-v2.sh --input-snapshot result/policy-interface-v2/frozen-cd2e82e-matrix --jobs 4 --output result/policy-interface-v2/reproduce-archived',
+              '```', '',
+              'To reproduce the final reset-aware generated sources specifically:', '',
+              '```bash',
+              'bash scripts/test-policy-interface-v2.sh --input-snapshot result/policy-interface-v2/final-e9a6d16-code --jobs 4 --output result/policy-interface-v2/reproduce-final-code',
+              'bash scripts/test-policy-interface-v2.sh --input-snapshot result/policy-interface-v2/final-e9a6d16-shadow --jobs 2 --output result/policy-interface-v2/reproduce-final-shadow',
               '```', '',
               'The snapshot command inherits original budgets, concurrency, policies and shadow settings unless',
               'explicitly overridden. It relocates the exact frozen data and copies the original policy sources.', '',

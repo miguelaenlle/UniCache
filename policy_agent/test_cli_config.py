@@ -24,6 +24,7 @@ class CliConfigTests(unittest.TestCase):
         self.assertIn('--restricted', cmd)
         self.assertIn('--safe-mode', cmd)
         self.assertIn('--no-session-persistence', cmd)
+        self.assertIn('Write(./bin/**)', cmd[cmd.index('--disallowedTools')+1])
         self.assertNotIn('TaskOutput', cmd[cmd.index('--tools')+1])
 
     def test_normal_login_keeps_same_tool_restrictions(self):

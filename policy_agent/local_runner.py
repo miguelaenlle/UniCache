@@ -27,6 +27,8 @@ def run_test(workspace, message, timeout=30):
     workspace = Path(workspace).resolve()
     action = message['action']
     context_path = workspace/'run_context.json'
+    if not context_path.resolve().is_relative_to(workspace):
+        raise ValueError('Run context must remain inside the coding workspace')
     v2 = context_path.is_file() and json.loads(context_path.read_text()).get('policy_interface') == 'v2'
     if action == 'smoke_test':
         script = Path(__file__).with_name('smoke_suite_v2.py' if v2 else 'smoke_suite.py').resolve()

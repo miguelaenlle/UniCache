@@ -324,7 +324,8 @@ blocks, copy-on-write, slot generations, reset and deliberate policy mismatch:
 .venv-sim312/bin/python -m unittest \
   policy_agent.test_v2_worker policy_agent.test_v2_policies policy_agent.test_v2_numerics \
   policy_agent.test_events policy_agent.test_v2_lifecycle \
-  policy_agent.test_local_runner policy_agent.test_sandbox
+  policy_agent.test_local_runner policy_agent.test_sandbox \
+  policy_agent.test_client_python policy_agent.test_cli_config
 ```
 
 These commands require macOS Seatbelt and the existing Python 3.12 environment.
