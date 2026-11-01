@@ -1864,7 +1864,7 @@ class SimpleHYBRIDEvictor(Evictor):
     #     )
 
 
-def make_evictor(eviction_policy: EvictionPolicy) -> Evictor:
+def _make_builtin_evictor(eviction_policy: EvictionPolicy) -> Evictor:
     if eviction_policy == EvictionPolicy.LRU:
         return LRUEvictor()
     elif eviction_policy == EvictionPolicy.FIFO:
@@ -1885,3 +1885,13 @@ def make_evictor(eviction_policy: EvictionPolicy) -> Evictor:
         return ARCEvictor()
     else:
         raise ValueError(f"Unknown cache eviction policy: {eviction_policy}")
+
+
+def make_evictor(eviction_policy: EvictionPolicy) -> Evictor:
+    base = _make_builtin_evictor(eviction_policy)
+    candidate = os.environ.get("UNICACHE_POLICY_CANDIDATE")
+    if candidate:
+        from pathlib import Path
+        from policy_agent.bridge import ControlledEvictor
+        return ControlledEvictor(base, Path(candidate).read_text())
+    return base

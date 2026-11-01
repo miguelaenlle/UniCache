@@ -221,12 +221,17 @@ class Simulator:
         for name, para in self.task_paras.items():
             task_data = list(self.separate_data[name].values())
             rng = np.random.default_rng(para["seed"] + para["task_id"])
-            rng.shuffle(task_data)
-            arrival_times = generate_poisson_requests(
-                lambda_rate=para["lambda_rate"],
-                num_sessions=len(task_data),
-                seed=para["seed"] + para["task_id"],
-            )
+            if "frozen_arrivals" in para:
+                frozen = para["frozen_arrivals"]
+                assert set(frozen) == {data["id"] for data in task_data}
+                arrival_times = [frozen[data["id"]] for data in task_data]
+            else:
+                rng.shuffle(task_data)
+                arrival_times = generate_poisson_requests(
+                    lambda_rate=para["lambda_rate"],
+                    num_sessions=len(task_data),
+                    seed=para["seed"] + para["task_id"],
+                )
             assert len(arrival_times) == len(task_data)
             # Push each first-turn request into the heap
             for i, arrival_time in enumerate(arrival_times):

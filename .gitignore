@@ -250,3 +250,5 @@ models/*
 **/config_out.yaml
 *.pem
 *.xlsx
+# Materialized policy-agent trace splits
+TaskData/**/agent-splits/
