@@ -169,3 +169,39 @@ counts. OPT uses a separate no-cache profile for every budget/trace/split. Outpu
 Best online policy is chosen from tune scores and then reported on eval, preventing
 selection on eval. OPT gaps are measured reference gaps, not guaranteed achievable
 online gains. A small test can use `--traces sharegpt --sessions 4`.
+
+### Headroom discovery protocol (1B only)
+
+The physical-memory-normalized reference is run unchanged with:
+
+```bash
+bash scripts/run-cache-budget-sweep.sh --jobs 8
+```
+
+A smaller experiment preserves full tune workloads but reduces policy count and
+omits eval. Its explicit budgets are NOT called 0.5A/0.7A/0.9A:
+
+```bash
+bash scripts/run-cache-budget-sweep.sh --jobs 4 \
+  --blocks 16384 32768 50000 98304 \
+  --policies LRU SimpleHYBRID OPT --splits tune
+```
+
+These are approximately 0.0515A / 0.1030A / 0.1571A / 0.3089A under the documented
+80 GiB post-weight convention. Keeping complete tune workloads avoids creating a
+misleadingly small working set by truncating sessions.
+
+Selection is predeclared: per trace, maximize the demonstrated UniCache-minus-LRU
+tune gain, break ties by larger OPT-minus-LRU tune gap and then larger budget. If no
+positive online gain exists, use the largest oracle gap but label it oracle-only
+evidence. Exclude failed/incomplete replays; inspect warnings/runtime before final
+confirmation. Confirm selected budgets with all eight main policies and both splits.
+Changing cache capacity does not change model timing, block size, request selection,
+or seeds. No coding agents or API calls are part of this experiment.
+
+Prerequisites: existing Python 3.12 simulator setup, local 1B model metadata/tokenizer,
+and the five prepared datasets (see POLICY_AGENT.md and dataset installation/provenance
+files). The run manifest pins full source-data checksums and each frozen split's
+configuration/data hashes. Source data and weights are not bundled into git; model
+weights are not needed. Exact generated split inputs are deterministic from the
+pinned source files, source limits and seeds.
