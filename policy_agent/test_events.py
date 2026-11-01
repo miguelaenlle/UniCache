@@ -41,6 +41,23 @@ class EventTransportTests(unittest.TestCase):
         self.assertNotIn('cache_id', gpu.received[1])
         self.assertEqual(cpu.received[1]['cache_id'], 'cpu:0')
 
+    def test_complete_context_precedes_policy_construction(self):
+        class Observer:
+            cache_id = 'gpu:0'
+            def __init__(self):
+                self.config = {'capacity':512}
+                self.initialized = False
+            def initialize(self):
+                self.initialized = True
+                self.model = self.config['serving_model']
+        observer = Observer()
+        events.register(observer)
+        with patch.dict(os.environ, {'UNICACHE_POLICY_INTERFACE':'v2'}):
+            events.configure(serving_model='llama-3.2-1b-instruct')
+        self.assertTrue(observer.initialized)
+        self.assertEqual(observer.model, 'llama-3.2-1b-instruct')
+        self.assertEqual(events._ordinal, 0)  # No access/eviction needed to initialize.
+
 
 if __name__ == '__main__':
     unittest.main()

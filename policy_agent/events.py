@@ -30,6 +30,12 @@ def configure(**fields):
     if enabled():
         for observer in tuple(_observers):
             observer.config.update(fields)
+    # Model/scheduler context is now complete. Construct the actual policy even
+    # on traces with too few observations to fill an event batch or evict.
+    for observer in tuple(_observers):
+        initialize = getattr(observer, 'initialize', None)
+        if initialize is not None:
+            initialize()
 
 
 def unregister(observer):

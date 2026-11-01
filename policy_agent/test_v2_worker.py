@@ -59,6 +59,24 @@ class WorkerTests(unittest.TestCase):
         r = self.remote('import numpy, scipy.stats\n' + SOURCE)
         self.assertEqual(r.initial['cache_mode'],'prefix')
 
+    def test_startup_mode_probe_does_not_construct_with_partial_context(self):
+        source = SOURCE.replace('self.blocks = {}',
+                                "self.blocks = {}; self.model = config['serving_model']")
+        r = V2Remote(source, {}, mode_only=True)
+        self.addCleanup(r.close)
+        self.assertEqual(r.initial['cache_mode'], 'prefix')
+        with self.assertRaisesRegex(PolicyFailure, 'Startup-only'):
+            r.call({'events':[], 'choose':False})
+        r = V2Remote(source, {'serving_model':'llama-3.2-1b-instruct'})
+        self.addCleanup(r.close)
+        self.assertEqual(r.initial['cache_mode'], 'prefix')
+
+    def test_mode_cannot_change_in_constructor(self):
+        source = SOURCE.replace('self.blocks = {}',
+                                "self.blocks = {}; self.CACHE_MODE = 'disabled'")
+        with self.assertRaisesRegex(PolicyFailure, 'class-level'):
+            self.remote(source)
+
     def test_stale_victim_fails_host_validation(self):
         from unittest.mock import patch
         e = IndependentEvictor(SOURCE)

@@ -15,8 +15,9 @@ def read_rows(folder):
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--root',type=Path,default=ROOT/'result/policy-interface-v2')
-    ap.add_argument('--matrix-dir',default='frozen-f1b4309-matrix')
-    ap.add_argument('--shadow-dir',default='frozen-f1b4309-shadow')
+    ap.add_argument('--matrix-dir',default='frozen-cd2e82e-matrix')
+    ap.add_argument('--shadow-dir',default='frozen-cd2e82e-shadow')
+    ap.add_argument('--pressure-dirs',nargs='*',default=['frozen-cd2e82e-real-pressure','frozen-cd2e82e-code-pressure'])
     args=ap.parse_args()
     matrix=Path(args.matrix_dir)
     if not matrix.is_absolute():matrix=args.root/matrix
@@ -26,13 +27,30 @@ def main():
     initial=read_rows(args.root/'full-reference-matrix')
     shadow=read_rows(shadowdir)
     cases=['sharegpt','mashqa','agentbank-apps','alfred','codeparrot','mixed']
+    pressure=[]
+    for name in args.pressure_dirs:
+        folder=Path(name)
+        pressure += read_rows(folder if folder.is_absolute() else args.root/folder)
     cells={(r['policy'],r['case']):r for r in primary}
     manifest=json.loads((matrix/'manifest.json').read_text()) if (matrix/'manifest.json').exists() else {}
     commit=manifest.get('git_head','unknown')
+    combined=primary+pressure+shadow
+    complete=len(primary)==len(POLICIES)*6 and len(pressure)==len(POLICIES)*3 and len(shadow)==4
+    verified=complete and all(r['status']=='ok' and r.get('scores_match') and r.get('first_difference') is None for r in combined)
+    stable=all(len({r['source_sha256'] for r in combined if r['policy']==policy})==1 for policy in POLICIES) if combined else False
+    real_pressure=all(any(r['policy']==policy and r['case']==trace and r.get('native_evictions',0)>0 for r in combined) for policy in POLICIES if policy!='NONE' for trace in cases[:-1])
+    verification={'complete':complete,'passed':verified,'case_count':len(combined),'expected_cases':112,
+                  'matched_evictions':sum(r.get('native_evictions',0) for r in combined if r['status']=='ok'),
+                  'identical_policy_source_across_configurations':stable,'every_online_policy_real_pressure_all_five_traces':real_pressure,
+                  'runtime_revision':commit}
+    (args.root/'verification.json').write_text(json.dumps(verification,indent=2))
     lines=['# Policy interface v2 verification','',f'Runtime revision: `{commit}`.', '',
+           f"Verification: {'PASS' if verified and stable and real_pressure else 'IN PROGRESS'}; {len(combined)}/112 cases; {verification['matched_evictions']:,} matched eviction decisions.", '',
            'This validates editable reference implementations, not LLM rediscovery or improved hit ratios.',
            'Every independent v2 replay uses the same host LRU route; only the standalone `policy.py` changes.',
            'Each policy owns its tracking, histories, numerical models, weights and eviction decisions.',
+           'Each policy uses byte-identical source across configurations. Every online policy has actual',
+           'nonzero eviction parity on each of the five real workloads using the main or pressure cases.',
            'Offline OPT is intentionally excluded. NONE is a disabled-cache initialization control.', '',
            '## Primary coverage: fixed host, 32 concurrent sequence slots','',
            'Five real prefixes use 64 source sessions (32 whole tune sessions) and 4,096 GPU blocks.',
@@ -49,9 +67,22 @@ def main():
             else: cell=r['status'].upper()
             row.append(cell)
         lines.append('| '+policy+' | '+' | '.join(row)+' |')
+    lines += ['', '## Supplementary real-workload pressure', '',
+              'At 512 blocks (4,096 tokens), one request at a time fits with margin: MASH-QA maximum',
+              '2,652 tokens / 332 blocks; APPS 2,304 / 288; CodeParrot 2,186 / 274. The full prefix',
+              'footprints exceed that capacity, forcing actual evictions. These supplements address',
+              'real cases that fit entirely at the main 4,096-block budget.', '',
+              '| Policy | MASH-QA / 512 | APPS / 512 | CodeParrot / 512 |', '|---|---:|---:|---:|']
+    pressurecells={(r['policy'],r['case']):r for r in pressure}
+    for policy in POLICIES:
+        cellslist=[]
+        for case in ('mashqa','agentbank-apps','codeparrot'):
+            r=pressurecells.get((policy,case))
+            cellslist.append('pending' if r is None else (f"PASS ({r['native_evictions']:,})" if r['status']=='ok' else r['status'].upper()))
+        lines.append('| '+policy+' | '+' | '.join(cellslist)+' |')
     lines += ['', 'Numbers in parentheses are matched eviction decisions; zero-eviction cases alone do not establish pressure coverage.','',
               '## Additional gates','', '| Gate | Passed | Recorded cases | Matched evictions |', '|---|---:|---:|---:|']
-    for title,rows in [('Fixed-host / max-seqs 32',primary),('Development original-host / max-seqs 1 (partial)',initial),('Native-shadow mixed / max-seqs 4',shadow)]:
+    for title,rows in [('Fixed-host / max-seqs 32',primary),('Development original-host / max-seqs 1 (partial)',initial),('Native-shadow mixed / max-seqs 4',shadow),('Supplementary real pressure / max-seqs 1',pressure)]:
         lines.append(f"| {title} | {sum(r['status']=='ok' for r in rows)} | {len(rows)} | {sum(r.get('native_evictions',0) for r in rows if r['status']=='ok'):,} |")
     lines += ['', 'Shadow runs retain native tracker behavior and native decisions. An isolated copy receives only',
               'the public facts and must propose the same victim at every native decision. Independent runs',
@@ -60,7 +91,15 @@ def main():
               '.venv-sim312/bin/python -m unittest policy_agent.test_v2_policies -v',
               'bash scripts/test-policy-interface-v2.sh --sessions 64 --jobs 4 --max-num-seqs 32 --output result/policy-interface-v2/reproduce-fixed',
               'bash scripts/test-policy-interface-v2.sh --traces --policies UniCache ARC LeCaR WA --jobs 2 --shadow --max-num-seqs 4 --output result/policy-interface-v2/reproduce-shadow',
-              'python3 scripts/report_policy_interface_v2.py --matrix-dir reproduce-fixed --shadow-dir reproduce-shadow', '```', '',
+              'bash scripts/test-policy-interface-v2.sh --traces mashqa agentbank-apps --sessions 64 --gpu-blocks 512 --max-num-seqs 1 --jobs 4 --no-mixed --output result/policy-interface-v2/reproduce-pressure',
+              'bash scripts/test-policy-interface-v2.sh --traces codeparrot --sessions 64 --gpu-blocks 512 --max-num-seqs 1 --jobs 2 --no-mixed --output result/policy-interface-v2/reproduce-code-pressure',
+              'python3 scripts/report_policy_interface_v2.py --matrix-dir reproduce-fixed --shadow-dir reproduce-shadow --pressure-dirs reproduce-pressure reproduce-code-pressure', '```', '',
+              'To reproduce from archived records and policy sources, without re-preparing the original datasets:', '',
+              '```bash',
+              'bash scripts/test-policy-interface-v2.sh --input-snapshot result/policy-interface-v2/frozen-cd2e82e-matrix --jobs 4 --output result/policy-interface-v2/reproduce-archived',
+              '```', '',
+              'The snapshot command inherits original budgets, concurrency, policies and shadow settings unless',
+              'explicitly overridden. It relocates the exact frozen data and copies the original policy sources.', '',
               'Frozen verification output directories contain the exact command, dependency versions, code/model hashes, input',
               'manifests, standalone editable sources, native/v2 decision ledgers and per-case comparisons.',
               'Use a fresh output directory for each reproduction. No coding model or API call is used here.', '',
@@ -72,6 +111,11 @@ def main():
               '`full-reference-matrix` and `fixed-host-concurrent-matrix` are partial development runs stopped',
               f'to free resources after runtime freeze. Primary coverage comes from `{matrix.name}` and',
               f'`{shadowdir.name}`, using the runtime revision recorded above.', '',
+              'Revision `f1b4309` failed UniCache shadow parity at decision 295. Source specialization had',
+              'incorrectly treated a value-returning `max_offset or 1` expression as a Boolean, changing',
+              'single-turn retention scores. Revision `cd2e82e` restricts partial Boolean folding to',
+              'predicate contexts. A numerical regression and native-algorithm AST preservation checks',
+              'now guard this failure. Superseded outputs remain archived and are excluded from final passes.', '',
               'The reducer also explicitly preserves native tracker reset quirks, deferred release times and',
               'post-allocation ghost-miss notification. Numerical code uses the environment versions recorded',
               'in each manifest. Exact parity is scoped to the tested inputs/settings; additional workloads,',

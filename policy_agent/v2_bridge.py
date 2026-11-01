@@ -25,7 +25,7 @@ def numerical_runtime():
 
 
 class V2Remote(Remote):
-    def __init__(self, source, config):
+    def __init__(self, source, config, *, mode_only=False):
         worker = Path(__file__).with_name('v2_worker.py').resolve()
         paths, packages, versions = numerical_runtime()
         runtime = Path(sys.executable).resolve()
@@ -38,7 +38,7 @@ class V2Remote(Remote):
                  'VECLIB_MAXIMUM_THREADS': '1', 'PYTHONDONTWRITEBYTECODE': '1'})
         try:
             self.initial = self.call({'source': source, 'config': {**config, 'dependencies': versions},
-                                      'dependency_paths': paths})
+                                      'dependency_paths': paths, 'mode_only': mode_only})
         except BaseException:
             self.close()
             raise
@@ -160,6 +160,9 @@ class IndependentEvictor:
         self.remote = V2Remote(self.source, config)
         if self.remote.initial['cache_mode'] != 'prefix':
             raise PolicyFailure('Disabled-cache policy must be configured before engine construction')
+
+    def initialize(self):
+        self._start()
 
     def flush(self, choose):
         self._start()

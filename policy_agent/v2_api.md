@@ -7,11 +7,19 @@ contains its algorithm and bookkeeping as editable source; other baseline source
 scores, eval inputs and offline OPT maps are not available in this workspace.
 
 `config` supplies cache_id, capacity in blocks, block_size in tokens, simulated clock
-units, API/event versions and numerical dependency versions. Time is virtual seconds.
+units, API/event versions and numerical dependency versions. It also supplies
+serving_model, model/KV dimensions, kv_dtype, kv_bytes_per_block and scheduler limits
+(max_model_len, max_num_seqs, max_num_batched_tokens, preemption_mode).
+Time is virtual seconds.
 State resets on every independent replay. Python standard library, NumPy, SciPy and
 their vetted import dependency charset_normalizer are available. No simulator imports,
 trace files, network, subprocesses or arbitrary filesystem writes are allowed in the
 policy worker. Each callback batch has 30 seconds; each worker has 600 CPU seconds.
+
+`CACHE_MODE` is an optional fixed class-level constant, either "prefix" (default)
+or "disabled" for the NONE control. Startup inspects this declaration in isolation
+without calling your constructor. The actual prefix-policy constructor runs once
+complete model/scheduler context is available, even when the trace needs no evictions.
 
 Events arrive in order, each with increasing event_id and time. Every pending event
 is delivered before a decision. A block's identity is (cache_id, block_id, generation);

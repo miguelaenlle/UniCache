@@ -1,5 +1,7 @@
 """Fast public-event contract checks; end-to-end parity is a separate CLI."""
 import unittest
+import ast
+from pathlib import Path
 from policy_agent.v2_policies import POLICIES, source_for_policy
 
 
@@ -29,6 +31,27 @@ def eligible(p,i):
 
 
 class V2PoliciesTests(unittest.TestCase):
+    def test_export_preserves_native_algorithm_syntax(self):
+        # Source cleanup must never rewrite numerical or selection expressions.
+        # Only the shared heap-cleanup threshold is inlined for standalone use.
+        native_path = Path(__file__).resolve().parents[1]/'vllm/core/evictor.py'
+        native = {n.name:n for n in ast.parse(native_path.read_text()).body
+                  if isinstance(n,ast.ClassDef)}
+        class NormalizeCleanup(ast.NodeTransformer):
+            def visit_Attribute(self, node):
+                if (isinstance(node.value,ast.Name) and node.value.id=='LRUEvictor'
+                        and node.attr=='CLEANUP_THRESHOLD'):
+                    return ast.Constant(50)
+                return self.generic_visit(node)
+        def canonical(node):
+            copied = ast.parse(ast.unparse(node)).body[0]
+            return ast.dump(NormalizeCleanup().visit(copied),include_attributes=False)
+        for name in POLICIES:
+            for node in ast.parse(source_for_policy(name)).body:
+                if isinstance(node,ast.ClassDef) and node.name in native:
+                    with self.subTest(policy=name,algorithm=node.name):
+                        self.assertEqual(canonical(node),canonical(native[node.name]))
+
     def test_every_source_is_standalone(self):
         for name in POLICIES:
             with self.subTest(name=name):
@@ -48,6 +71,26 @@ class V2PoliciesTests(unittest.TestCase):
         for forbidden in ('ARCEvictor','SimpleHYBRIDEvictor','LeCaREvictor','maxlen=500','_KnownRequests'):
             self.assertNotIn(forbidden,source)
         self.assertNotIn('class LRUEvictor',source_for_policy('ARC'))
+
+    def test_online_lookahead_uses_only_admitted_demand(self):
+        for name in ('OPT-Online','SimpleHYBRID-OPT'):
+            with self.subTest(name=name):
+                p=make(name)
+                create(p,0);create(p,1)
+                access(p,0,[0],now=1.)
+                access(p,1,[1],now=2.)
+                emit(p,'request_admitted',request_id='a',prefix_hashes=['0'])
+                emit(p,'request_admitted',request_id='b',prefix_hashes=['1'])
+                emit(p,'request_admitted',request_id='c',prefix_hashes=['0'])
+                emit(p,'engine_iteration',prefill_counter=1)
+                eligible(p,0);eligible(p,1)
+                helper=p.algorithm.OPTHelper
+                self.assertEqual(helper._get_next_use('0'),2)
+                self.assertEqual(helper._get_next_use('1'),float('inf'))
+                self.assertEqual(helper._get_next_use('never_admitted'),float('inf'))
+                # Current known future demand protects old block 0. LRU would
+                # evict it; both online variants instead discard newer block 1.
+                self.assertEqual(p.evict({'now':3.})['block_id'],1)
 
     def test_no_offline_opt(self):
         with self.assertRaises(ValueError): source_for_policy('OPT')

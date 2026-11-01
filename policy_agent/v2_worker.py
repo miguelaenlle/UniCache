@@ -24,12 +24,23 @@ try:
     namespace = {'__name__': 'candidate'}
     with contextlib.redirect_stdout(io.StringIO()):
         exec(compile(source, 'policy.py', 'exec'), namespace)
-        policy = namespace['Policy'](init['config'])
-        if not all(callable(getattr(policy, name, None)) for name in ('on_event', 'evict')):
-            raise TypeError('Policy must implement on_event(event) and evict(context)')
-        mode = getattr(policy, 'CACHE_MODE', 'prefix')
+        policy_type = namespace['Policy']
+        if not isinstance(policy_type, type):
+            raise TypeError('Policy must be a class')
+        mode = getattr(policy_type, 'CACHE_MODE', 'prefix')
         if mode not in ('prefix', 'disabled'):
             raise ValueError('CACHE_MODE must be prefix or disabled')
+        if init.get('mode_only'):
+            # Engine context is not available at this startup-only boundary.
+            # Never call a constructor with an incomplete config just to read
+            # the static cache-mode declaration.
+            policy = None
+        else:
+            policy = policy_type(init['config'])
+            if getattr(policy, 'CACHE_MODE', 'prefix') != mode:
+                raise ValueError('CACHE_MODE must be a fixed class-level declaration')
+            if not all(callable(getattr(policy, name, None)) for name in ('on_event', 'evict')):
+                raise TypeError('Policy must implement on_event(event) and evict(context)')
     response({'result': {'cache_mode': mode}})
 except BaseException as error:
     response({'error': type(error).__name__ + ': ' + str(error), 'traceback': traceback.format_exc()})
@@ -39,6 +50,8 @@ last_event_id = 0
 for line in sys.stdin:
     try:
         message = json.loads(line)
+        if policy is None:
+            raise ValueError('Startup-only mode probe cannot receive runtime callbacks')
         with contextlib.redirect_stdout(io.StringIO()):
             for event in message.get('events', []):
                 if event['event_id'] <= last_event_id:

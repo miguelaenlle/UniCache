@@ -1,6 +1,7 @@
 # Policy interface v2: implement the online baselines from scratch
 
-Status: the initial v2 implementation is committed as `f1b4309`; reference validation
+Status: v2 is implemented in `f1b4309`, with the source-generation correction in
+`cd2e82e`; reference validation
 is recorded in [the verification report](result/policy-interface-v2/report.md).
 The sections below retain the design rationale. The implemented field names and
 commands are documented in [v2_api.md](policy_agent/v2_api.md) and

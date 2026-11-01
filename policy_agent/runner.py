@@ -149,7 +149,8 @@ class Evaluator:
         if candidate and getattr(self.args, 'policy_interface', 'v1') == 'v2':
             from policy_agent.v2_bridge import V2Remote
             probe = V2Remote(Path(candidate).read_text(),
-                             {'api_version':2, 'capacity':self.args.gpu_blocks, 'block_size':8})
+                             {'api_version':2, 'capacity':self.args.gpu_blocks, 'block_size':8},
+                             mode_only=True)
             try:
                 disabled_control = probe.initial['cache_mode'] == 'disabled'
             finally:
@@ -388,7 +389,8 @@ def main():
     if args.policy_interface == 'v2':
         from policy_agent.v2_bridge import V2Remote
         probe = V2Remote((sandbox/'policy.py').read_text(),
-                         {'api_version':2, 'capacity':args.gpu_blocks, 'block_size':8})
+                         {'api_version':2, 'capacity':args.gpu_blocks, 'block_size':8},
+                         mode_only=True)
     else:
         probe = Remote((ROOT/'policy_agent/starter.py').read_text())
     probe.close()

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import time
 import yaml
@@ -131,6 +132,31 @@ def mixed_case(out):
     return {'name':'mixed','config':cfg,'expected':expected}
 
 
+def snapshot_cases(snapshot, out, names):
+    """Relocate frozen records without downloading, reshuffling or retokenizing."""
+    cases=[]
+    for name in names:
+        folder=snapshot/name
+        config=yaml.safe_load((folder/'replay.yaml').read_text())
+        destination=out/'inputs'/name
+        destination.mkdir(parents=True)
+        expected={}
+        for i,task in enumerate(config['tasks']):
+            source=folder/f'data-{i}.jsonl'
+            target=destination/f'data-{i}.jsonl'
+            shutil.copyfile(source,target)
+            task['data_path']=str(target.resolve())
+            for line in target.read_text().splitlines():
+                for sid,record in json.loads(line).items():
+                    for turn in range(1,record['num_turns']+1):
+                        data=record[f'turn_{turn}']
+                        expected[f'id_{sid}_turn_{turn}']=(len(data['input_ids']),len(data['response_ids']))
+        cfg=destination/'replay.yaml'
+        cfg.write_text(yaml.safe_dump(config))
+        cases.append({'name':name,'config':cfg,'expected':expected})
+    return cases
+
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--policies',nargs='+',default=list(POLICIES),choices=POLICIES)
@@ -143,20 +169,41 @@ def main():
     ap.add_argument('--output',type=Path)
     ap.add_argument('--no-mixed',action='store_true')
     ap.add_argument('--shadow',action='store_true',help='Also validate private candidate against native events and decisions')
+    ap.add_argument('--input-snapshot',type=Path,help='Existing run or its inputs/ directory; reuse exact records, sources and settings')
     args=ap.parse_args()
     os.environ['TOKENIZERS_PARALLELISM']='false'
+    snapshot=None
+    archived=None
+    if args.input_snapshot:
+        snapshot=args.input_snapshot.resolve()
+        if (snapshot/'inputs').is_dir():snapshot=snapshot/'inputs'
+        archived=json.loads((snapshot.parent/'manifest.json').read_text())
+        for flag,field in [('--gpu-blocks','gpu_blocks'),('--max-num-seqs','max_num_seqs'),('--policies','policies')]:
+            if flag not in sys.argv and field in archived:setattr(args,field,archived[field])
+        if '--shadow' not in sys.argv:args.shadow='--shadow' in archived['command']
     out=(args.output or ROOT/'result/policy-interface-v2'/datetime.now(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d/%H%M%S')).resolve()
     out.mkdir(parents=True,exist_ok=False)
     (out/'sources').mkdir()
     for policy in args.policies:
-        (out/'sources'/f'{policy}.py').write_text(source_for_policy(policy))
+        if snapshot:
+            original=snapshot.parent/'sources'/f'{policy}.py'
+            (out/'sources'/f'{policy}.py').write_bytes(original.read_bytes())
+        else:
+            (out/'sources'/f'{policy}.py').write_text(source_for_policy(policy))
     cases=[]
-    for trace in args.traces:
-        cfgs,expected,manifest=prepare(argparse.Namespace(trace=trace,sessions=args.sessions))
-        cases.append({'name':trace,'config':cfgs['tune'],'expected':expected['tune']})
-        (out/f'{trace}-inputs.json').write_text(json.dumps(manifest,indent=2))
-    if not args.no_mixed:
-        cases.append(mixed_case(out))
+    if snapshot:
+        names=[c['name'] for c in archived['cases']]
+        if '--traces' in sys.argv:
+            names=[n for n in names if n in args.traces or (n=='mixed' and not args.no_mixed)]
+        if args.no_mixed:names=[n for n in names if n!='mixed']
+        cases=snapshot_cases(snapshot,out,names)
+    else:
+        for trace in args.traces:
+            cfgs,expected,manifest=prepare(argparse.Namespace(trace=trace,sessions=args.sessions))
+            cases.append({'name':trace,'config':cfgs['tune'],'expected':expected['tune']})
+            (out/f'{trace}-inputs.json').write_text(json.dumps(manifest,indent=2))
+        if not args.no_mixed:
+            cases.append(mixed_case(out))
     for case in cases:
         case['max_num_seqs']=args.max_num_seqs
         case['v2_host_policy']=args.v2_host_policy
@@ -166,7 +213,9 @@ def main():
                ROOT/'vllm/core/block_manager.py',ROOT/'vllm/core/scheduler.py',
                ROOT/'vllm/engine/llm_engine.py',ROOT/'vllm/simulator/output_simulator.py']
     modelpaths=[p for p in (ROOT/'models/Llama-3.2-1B-Instruct').iterdir() if p.is_file()]
-    manifest={'code_sha256':{str(p.relative_to(ROOT)):digest(p) for p in codepaths},
+    manifest={'input_snapshot':str(snapshot) if snapshot else None,
+              'reference_runtime_revision':archived.get('git_head') if archived else None,
+              'code_sha256':{str(p.relative_to(ROOT)):digest(p) for p in codepaths},
               'model_sha256':{str(p.relative_to(ROOT)):digest(p) for p in modelpaths},
               'dependencies':{p:importlib.metadata.version(p) for p in ('numpy','scipy','torch','transformers')},
               'git_head':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),

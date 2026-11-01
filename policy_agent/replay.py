@@ -14,7 +14,8 @@ if os.environ.get('UNICACHE_POLICY_INTERFACE') == 'v2':
     source = Path(os.environ['UNICACHE_POLICY_CANDIDATE']).read_text()
     probe = V2Remote(source, {'api_version':2,
                             'capacity':int(cli_value('--simulator-num-gpu-blocks', 50000)),
-                            'block_size':int(cli_value('--block-size', 8)), 'cache_id':'gpu:0'})
+                            'block_size':int(cli_value('--block-size', 8)), 'cache_id':'gpu:0'},
+                     mode_only=True)
     try:
         mode = probe.initial['cache_mode']
     finally:
