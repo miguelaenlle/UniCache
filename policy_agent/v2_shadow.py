@@ -44,6 +44,14 @@ class NativeShadowEvictor(IndependentEvictor):
     def update(self, *args, **kwargs):
         self.base.update(*args, **kwargs)
 
+    def reset_cache(self):
+        # Native reset replaces the evictor, while its module-level helpers live on.
+        # Retain the same observer/worker so candidate-owned global histories do too.
+        if self.eligible:
+            raise PolicyFailure('Cannot reset shadow before cached blocks are released')
+        self.base = type(self.base)()
+        super().reset_cache()
+
     def evict(self):
         self.decision_id += 1
         preceding = self.events[-32:]

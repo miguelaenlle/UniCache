@@ -145,13 +145,27 @@ class LifecycleTests(unittest.TestCase):
             self.assertTrue(allocator.reset_prefix_cache())
             self.assertFalse(allocator._cached_blocks)
             if v2:
-                self.assertNotIn(old_observer, events._observers)
+                self.assertIs(allocator.evictor, old_observer)
+                self.assertIn(old_observer, events._observers)
+                self.assertEqual(sum(o is old_observer for o in events._observers), 1)
+                self.assertTrue(any(e['kind']=='cache_reset' for e in old_observer.remote.received))
                 self.assertEqual(allocator.evictor.config['capacity'], 3)
-                block = allocator.allocate_immutable_block(None, [999] * 8)
+                post_reset_at = len(allocator.evictor.remote.received)
+            for n in range(9, 15):
+                block = allocator.allocate_immutable_block(None, [990 + n] * 8)
                 self.assertEqual(allocator._refcounter.get(block.block_id), 1)
-                touch(block, 9.)
+                touch(block, float(n))
+                trace.append((block.block_id, block.content_hash))
                 allocator.free(block)
+            if v2:
                 allocator.evictor.flush(False)
+                post_reset = [(e['block_id'], int(e['content_hash']))
+                              for e in allocator.evictor.remote.received[post_reset_at:]
+                              if e['kind']=='block_evicted']
+            else:
+                post_reset = list(allocator.evictor.decisions)
+            self.assertGreater(len(post_reset), 0)
+            decisions.extend(post_reset)
             return trace, decisions
 
     def test_passive_native_observation_preserves_fifo_tracker_and_decisions(self):
@@ -174,6 +188,77 @@ class LifecycleTests(unittest.TestCase):
                     self.assertTrue(any(e['kind']=='lookup_completed' for e in allocator.evictor.received))
                     self.assertTrue(any(e['kind']=='block_allocated' and e['generation']>1 for e in allocator.evictor.received))
         self.assertEqual(*results)
+
+    def test_online_opt_post_reset_retains_queued_prefix_demand(self):
+        from vllm.core import evictor as native_module
+        from vllm.simulator import opt_utils
+
+        class RecordingOPT(native_module.OPTEvictor):
+            def __init__(self):
+                super().__init__()
+                self.decisions = []
+            def evict(self):
+                value = super().evict()
+                self.decisions.append(value)
+                return value
+
+        a_tokens, b_tokens = [31] * 8, [32] * 8
+        hash_a = module.PrefixCachingBlock.hash_block_tokens(True, None, a_tokens)
+        hash_b = module.PrefixCachingBlock.hash_block_tokens(True, None, b_tokens)
+        results = []
+        for mode in ('native', 'v2', 'shadow'):
+            helper = opt_utils.OnlineOPTHelper()
+            helper.reuse_track = {hash_a: [1], hash_b: [2]}
+            helper.req_counter = 3
+            source = source_for_policy('OPT-Online')
+            def factory(_):
+                if mode == 'native':
+                    return RecordingOPT()
+                if mode == 'shadow':
+                    return NativeShadowEvictor(RecordingOPT(), source)
+                return IndependentEvictor(source)
+            env = {'UNICACHE_POLICY_INTERFACE': 'v2' if mode == 'v2' else 'v1',
+                   'POLICY_AGENT_INTERFACE': '',
+                   'UNICACHE_POLICY_OBSERVE': '1' if mode == 'shadow' else '0'}
+            with patch.dict(os.environ, env), patch.object(module, 'make_evictor', factory), patch('policy_agent.v2_bridge.V2Remote', _LocalRPC), patch.object(native_module, 'GLOBAL_ONLINE_OPT_HELPER', helper), patch.object(native_module.GLOBAL_SIMULATOR_CONFIG, 'eviction_policy', 'OPT-Online'), patch.object(opt_utils, 'PREFILL_CNT', 0):
+                allocator = module.PrefixCachingBlockAllocator(2, 8, eviction_policy=EvictionPolicy.OPT)
+                if mode != 'native':
+                    for ordinal, hashes in enumerate(([], [hash_a], [hash_b])):
+                        events.emit('request_admitted', request_id=f'r{ordinal}',
+                                    prefix_hashes=[str(h) for h in hashes])
+                    events.emit('engine_iteration', prefill_counter=0)
+                old = allocator.allocate_immutable_block(None, [99] * 8)
+                allocator.mark_blocks_as_accessed([old.block_id], 0.)
+                allocator.free(old)
+                self.assertTrue(allocator.reset_prefix_cache())
+                allocated = []
+                for n, tokens in enumerate((a_tokens, b_tokens, [33] * 8), start=1):
+                    block = allocator.allocate_immutable_block(None, tokens)
+                    ids = [block.block_id]
+                    if mode != 'native':
+                        step = dict(sequence_id=n, block_ids=ids, now=float(n),
+                                    is_prefill=True, workload_class='ShareGPT-multi-turn_validation',
+                                    output_tokens_len=0)
+                        events.emit('sequence_step', **step)
+                        events.emit('sequence_release', sequence_id=n, block_ids=ids,
+                                    last_step=step)
+                    allocator.mark_blocks_as_accessed(ids, float(n))
+                    allocated.append((block.block_id, block.content_hash))
+                    allocator.free(block)
+                if mode == 'native':
+                    decisions = list(allocator.evictor.decisions)
+                else:
+                    allocator.evictor.flush(False)
+                    received = allocator.evictor.remote.received
+                    reset_at = max(i for i,e in enumerate(received) if e['kind']=='cache_reset')
+                    decisions = [(e['block_id'], int(e['content_hash']))
+                                 for e in received[reset_at+1:] if e['kind']=='block_evicted']
+                self.assertEqual(len(decisions), 1)
+                self.assertEqual(decisions[0][1], hash_b)
+                self.assertEqual(allocated[2][0], allocated[1][0])
+                results.append((allocated, decisions))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(results[0], results[2])
 
     def test_shadow_rejects_a_different_strategy_at_first_victim_difference(self):
         from policy_agent.bridge import PolicyFailure

@@ -920,18 +920,11 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         # Should not have any cached blocks because all blocks are evicted.
         assert not self._cached_blocks
 
-        # Reset the evictor. A cache reset starts fresh policy state as well.
-        previous_config = previous_cache_id = None
+        # Reset local retention state, not the worker's online workload history.
         if self._policy_v2:
-            from policy_agent import events as policy_events
-            previous_config = dict(self.evictor.config)
-            previous_cache_id = self.evictor.cache_id
-            policy_events.unregister(self.evictor)
-            self.evictor.close()
-        self.evictor = make_evictor(self.eviction_policy)
-        if self._policy_v2:
-            self.evictor.config.update(previous_config)
-            self.evictor.cache_id = previous_cache_id
+            self.evictor.reset_cache()
+        else:
+            self.evictor = make_evictor(self.eviction_policy)
 
         # Reset the block tracker.
         for block_id in self._block_tracker:

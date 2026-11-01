@@ -190,6 +190,62 @@ class V2NumericalBranches(unittest.TestCase):
         self.assertTrue(policy.algorithm.miss_in_B2)
         self.assertNotIn('1', policy.algorithm.B2)
 
+    def test_cache_reset_preserves_wa_fit_and_samples_but_clears_residents(self):
+        policy, scope = make('WA', wa_fit_interval=12)
+        create(policy, 0)
+        for now in (0., 2., 4., 6., 8., 10.):
+            access(policy, 0, now)
+        helper = scope['GLOBAL_WA_HELPER']
+        task = scope['TaskType'].MULTI_TURN_TEXT
+        helper.get_reuse_probability(task, 3.)
+        access(policy, 0, 14.)
+        original_algorithm = policy.algorithm
+        event(policy, 'cache_reset', time=15.)
+        self.assertIsNot(policy.algorithm, original_algorithm)
+        self.assertIs(scope['GLOBAL_WA_HELPER'], helper)
+        self.assertEqual(helper.fitted_params[task], (.5, 2.))
+        self.assertEqual(helper.last_fit_time, 10.)
+        self.assertEqual(helper.reuse_time[task], [4.])
+        self.assertFalse(policy.blocks)
+        self.assertFalse(policy.steps)
+        self.assertEqual(policy.algorithm.num_blocks, 0)
+
+    def test_cache_reset_preserves_unicache_accounting_and_resets_weights(self):
+        policy, scope = make('UniCache')
+        account(policy, 1, 'text', 100)
+        account(policy, 2, 'agentic', 25)
+        output = scope['_OUTPUT']
+        policy.algorithm.alpha_text = 7.
+        policy.algorithm.alpha_balance['text'] = 7.
+        policy.algorithm._last_alpha_update_step = 10
+        event(policy, 'cache_reset', time=3.)
+        self.assertIs(scope['_OUTPUT'], output)
+        self.assertIs(policy.algorithm.output_simulator, output)
+        self.assertEqual(output.step_track, 2)
+        self.assertEqual(list(output.tracked_hit_stats['text']), [95.])
+        self.assertEqual(list(output.tracked_hit_stats['agentic']), [25])
+        self.assertEqual(policy.algorithm.alpha_balance['text'], 1.)
+        self.assertEqual(policy.algorithm._last_alpha_update_step, -1)
+        self.assertEqual(policy.algorithm.num_blocks, 0)
+
+    def test_cache_reset_preserves_known_admissions_and_prefill_progress(self):
+        for name in ('OPT-Online', 'SimpleHYBRID-OPT'):
+            with self.subTest(policy=name):
+                policy, scope = make(name)
+                for i in range(3):
+                    event(policy, 'request_admitted', request_id=f'r{i}',
+                          prefix_hashes=['queued'] if i==2 else [])
+                event(policy, 'engine_iteration', prefill_counter=1)
+                helper = scope['GLOBAL_ONLINE_OPT_HELPER']
+                event(policy, 'cache_reset')
+                self.assertIs(scope['GLOBAL_ONLINE_OPT_HELPER'], helper)
+                self.assertEqual(helper.counter, 3)
+                self.assertEqual(helper.prefill_counter, 1)
+                self.assertEqual(helper._get_next_use('queued'), 2)
+                event(policy, 'request_admitted', request_id='r2', prefix_hashes=['queued'])
+                self.assertEqual(helper.counter, 3)
+                self.assertEqual(policy.known_admissions, {'r0', 'r1', 'r2'})
+
     def test_lecar_rng_matches_seeded_numpy_reference(self):
         policy, _ = make('LeCaR')
         expected = [0 if value < .5 else 1 for value in np.random.RandomState(123).rand(20)]

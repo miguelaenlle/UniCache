@@ -104,6 +104,14 @@ class IndependentEvictor:
             self.audit.close()
             self.audit = None
 
+    def reset_cache(self):
+        """Reset physical retention state without discarding online observations."""
+        if self.eligible:
+            raise PolicyFailure('Cannot reset policy before cached blocks are released')
+        from vllm.simulator.timer_utils import GLOBAL_TIMER
+        self.emit({'kind': 'cache_reset', 'time': GLOBAL_TIMER.get_current_time()})
+        self.flush(False)
+
     def __contains__(self, block_id):
         return block_id in self.eligible
 

@@ -44,6 +44,16 @@ cumulative prefix token count. Active blocks are observable but cannot be evicte
 | engine_iteration | Native iteration/prefill progress counters; distinct from accounting ordinal |
 | request_state / request_finished | Online scheduling/completion transitions |
 | block_evicted | block_id, generation, content_hash, decision_id; confirmed decision outcome |
+| cache_reset | This cache has been emptied; physical block/policy membership must be reset. The same worker and online request/accounting history remain available. |
+
+A cache reset differs from a new replay. On `cache_reset`, discard resident block and
+pending sequence state; keep any online workload history your strategy needs. Reference
+ports recreate the evictor's queues/weights but preserve WA samples/fits, UniCache hit
+windows, and known admitted-request demand/progress. Generation counters continue;
+no old block becomes eligible again without a new lifecycle observation. Native
+post-reset bookkeeping is supported by LRU and OPT-Online. Several other native
+policies replace their specialized tracker with `BlockTracker` during reset; those
+native post-reset paths are defective and are not claimed as parity-tested.
 
 Not every event is an access. Choose your own definitions and reset rules from raw
 facts; do not increment a frequency counter once for every event. A sequence release

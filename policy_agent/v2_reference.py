@@ -167,7 +167,13 @@ class Policy:
         GLOBAL_TIMER.now = event.get('time', event.get('now', GLOBAL_TIMER.now))
         kind = event['kind']
         block_id = event.get('block_id')
-        if kind in ('block_allocated', 'block_created'):
+        if kind == 'cache_reset':
+            # Match native evictor replacement. Global fits, hit windows, queued
+            # demand and admission/progress counters are not physical-cache state.
+            self.algorithm = type(self.algorithm)()
+            self.blocks.clear()
+            self.steps.clear()
+        elif kind in ('block_allocated', 'block_created'):
             b = self._block(block_id)
             self._reset_active(b, True)
             b['generation'] = event.get('generation', b['generation'] + 1)
