@@ -18,6 +18,8 @@ def main():
     ap.add_argument('--matrix-dir',default='frozen-cd2e82e-matrix')
     ap.add_argument('--shadow-dir',default='frozen-cd2e82e-shadow')
     ap.add_argument('--pressure-dirs',nargs='*',default=['frozen-cd2e82e-real-pressure','frozen-cd2e82e-code-pressure'])
+    ap.add_argument('--postgate-code-dir',default='startup-4db0ee6-code')
+    ap.add_argument('--postgate-shadow-dir',default='startup-4db0ee6-shadow')
     args=ap.parse_args()
     matrix=Path(args.matrix_dir)
     if not matrix.is_absolute():matrix=args.root/matrix
@@ -43,6 +45,31 @@ def main():
                   'matched_evictions':sum(r.get('native_evictions',0) for r in combined if r['status']=='ok'),
                   'identical_policy_source_across_configurations':stable,'every_online_policy_real_pressure_all_five_traces':real_pressure,
                   'runtime_revision':commit}
+    postrows=[]
+    discrepancies=[]
+    ledgerfiles=0
+    postrevision=None
+    for newname,oldname in [(args.postgate_code_dir,'frozen-cd2e82e-code-pressure'),(args.postgate_shadow_dir,'frozen-cd2e82e-shadow')]:
+        new=Path(newname)
+        if not new.is_absolute():new=args.root/new
+        old=args.root/oldname
+        if (new/'manifest.json').exists():postrevision=json.loads((new/'manifest.json').read_text()).get('git_head')
+        for row in read_rows(new):
+            postrows.append(row)
+            case=Path(row['case'])/row['policy']
+            originalrow=json.loads((old/case/'comparison.json').read_text())
+            if row.get('source_sha256') != originalrow.get('source_sha256'):discrepancies.append(str(case/'source'))
+            modes=['native','v2']+(['shadow'] if row.get('shadow_checked') else [])
+            for mode in modes:
+                before=old/case/mode/'decisions.jsonl'
+                after=new/case/mode/'decisions.jsonl'
+                if (before.read_bytes() if before.exists() else b'') != (after.read_bytes() if after.exists() else b''):
+                    discrepancies.append(str(case/mode))
+                ledgerfiles += 1
+    verification['post_gate_startup_protocol']={'runtime_revision':postrevision,'reference_runtime_revision':commit,
+        'cases_recorded':len(postrows),'expected_cases':16,
+        'passed':len(postrows)==16 and all(r['status']=='ok' for r in postrows) and not discrepancies,
+        'byte_identical_ledger_comparisons':ledgerfiles-len(discrepancies),'ledger_discrepancies':discrepancies}
     (args.root/'verification.json').write_text(json.dumps(verification,indent=2))
     lines=['# Policy interface v2 verification','',f'Runtime revision: `{commit}`.', '',
            f"Verification: {'PASS' if verified and stable and real_pressure else 'IN PROGRESS'}; {len(combined)}/112 cases; {verification['matched_evictions']:,} matched eviction decisions.", '',
@@ -84,6 +111,13 @@ def main():
               '## Additional gates','', '| Gate | Passed | Recorded cases | Matched evictions |', '|---|---:|---:|---:|']
     for title,rows in [('Fixed-host / max-seqs 32',primary),('Development original-host / max-seqs 1 (partial)',initial),('Native-shadow mixed / max-seqs 4',shadow),('Supplementary real pressure / max-seqs 1',pressure)]:
         lines.append(f"| {title} | {sum(r['status']=='ok' for r in rows)} | {len(rows)} | {sum(r.get('native_evictions',0) for r in rows if r['status']=='ok'):,} |")
+    post=verification['post_gate_startup_protocol']
+    lines += ['', '## Startup protocol regression', '',
+              f"Post-gate runtime revision: `{postrevision}`. {len(postrows)}/16 targeted configurations recorded; "+('PASS.' if post['passed'] else 'in progress.'),
+              f"{post['byte_identical_ledger_comparisons']} native/v2/shadow eviction-ledger comparisons are byte-identical (empty for NONE) to their original core-gate runs.",
+              'This separate check validates the mode-only startup handshake and eager initialization with',
+              'the full environment context. Policy algorithms and archived candidate sources are unchanged.',
+              'It supplements the 112-case core gate rather than relabelling that gate as a newer revision.', '']
     lines += ['', 'Shadow runs retain native tracker behavior and native decisions. An isolated copy receives only',
               'the public facts and must propose the same victim at every native decision. Independent runs',
               'also exercise the new policy-neutral tracker route and its feedback on subsequent requests.', '',

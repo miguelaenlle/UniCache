@@ -301,8 +301,16 @@ def claude_command(sandbox, coding_model):
     claude = shutil.which('claude')
     if not claude:
         raise RuntimeError('Claude CLI not installed')
+    normal_auth = os.environ.get('UNICACHE_NORMAL_CLI_AUTH') == '1'
     env = {'PATH':f'{sandbox / "bin"}:/usr/bin:/bin:/opt/homebrew/bin',
-           'HOME':str(sandbox/'home'),'TMPDIR':str(sandbox/'tmp'), 'PYTHONNOUSERSITE':'1'}
+           'HOME':os.environ['HOME'] if normal_auth else str(sandbox/'home'),
+           'TMPDIR':str(sandbox/'tmp'), 'PYTHONNOUSERSITE':'1',
+           'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS':'1',
+           'BASH_DEFAULT_TIMEOUT_MS':'1800000', 'BASH_MAX_TIMEOUT_MS':'1800000'}
+    if normal_auth:
+        for key in ('USER', 'LOGNAME', 'SHELL', '__CF_USER_TEXT_ENCODING'):
+            if os.environ.get(key):
+                env[key] = os.environ[key]
     for key in ['ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN']:
         if os.environ.get(key):
             env[key] = os.environ[key]
@@ -327,6 +335,8 @@ def main():
     p.add_argument('--require-baselines', nargs='+', choices=ALL_POLICIES, default=[], help='Do not start Claude unless these baselines pass both splits')
     p.add_argument('--max-submissions', type=int, default=30)
     p.add_argument('--debug', action='store_true', help='Save the full Claude event stream to claude.log')
+    p.add_argument('--normal-cli-auth', action='store_true',
+                   help='Use the normal Claude CLI login with personal customizations disabled')
     p.add_argument('--prepare-only', action='store_true', help='Build sandbox and splits without simulations or Claude')
     p.add_argument('--sessions', type=int, help='Explicit source subset override; default authors standalone limit (1000)')
     p.add_argument('--gpu-blocks', type=int, default=50000)
@@ -344,7 +354,12 @@ def main():
         p.error('Use the Python 3.12 simulator environment')
     if not Path('/usr/bin/sandbox-exec').exists():
         p.error('V1 currently requires macOS Seatbelt; no unsafe fallback')
-    if not args.prepare_only and not (os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')):
+    if args.normal_cli_auth and not args.prepare_only:
+        auth = subprocess.run(['claude','auth','status'], capture_output=True, text=True, check=True)
+        if not json.loads(auth.stdout).get('loggedIn'):
+            p.error('Run claude auth login first')
+        os.environ['UNICACHE_NORMAL_CLI_AUTH'] = '1'
+    if not args.prepare_only and not args.normal_cli_auth and not (os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('CLAUDE_CODE_OAUTH_TOKEN')):
         p.error('Export ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN for the isolated Claude CLI, or use --prepare-only')
     configs, expected, manifest = prepare(args)
     stamp = datetime.now(ZoneInfo('America/Chicago')).strftime('%Y-%m-%d/%H%M%S-%f')

@@ -1,4 +1,10 @@
-# Policy agent v1
+# Policy agent
+
+The default interface is v1 for comparison with earlier experiments. Add
+`--policy-interface v2` for independent policy state and mandatory explicit eviction
+decisions. See [the v2 contract](policy_agent/v2_api.md),
+[manual replay commands](EXPERIMENTS.md#editable-policy-interface-v2-manual-validation-no-coding-model)
+and [reference verification](result/policy-interface-v2/report.md).
 
 Requires macOS, the `.venv-sim312` simulator environment, prepared ShareGPT data,
 and the Claude Code CLI. No weights or GPU are used. The coding model uses the
@@ -8,6 +14,14 @@ The isolated CLI needs `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` in your 
 For subscription authentication, run `claude setup-token` yourself and export the
 result as `CLAUDE_CODE_OAUTH_TOKEN`. Your regular Claude home directory is not mounted.
 Do not put credentials in repository files.
+
+Alternatively, run `claude auth login` normally and add `--normal-cli-auth`. This
+explicit option uses the normal CLI home/account context for authentication without
+extracting credentials. Restricted and safe modes remain active: personal
+instructions/settings, plugins, hooks and MCP are disabled, and file tools remain
+confined to the coding workspace. Submitted policies and custom tests retain their
+separate offline Seatbelt sandbox. The coding CLI uses tool restrictions, not an OS
+sandbox.
 
 ```bash
 ./policy-agent run \
@@ -41,6 +55,9 @@ Claude sees only its prompt/interface/context, candidate, rationale, and tune hi
 Comparison-policy names/scores and eval results stay outside its context (except the
 chosen starting policy). The default cap is 30 accepted attempts; failed attempts
 count. `python submit.py --done --reason "done"` finishes early.
+Background CLI tasks are disabled and Bash submission commands wait up to 30 minutes
+so the agent receives evaluation feedback before continuing. The cache-budget study
+also rejects runs that exited before their final feedback was delivered.
 
 Claude can run these commands without spending submission attempts:
 

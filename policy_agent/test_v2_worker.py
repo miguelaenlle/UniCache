@@ -87,6 +87,19 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(PolicyFailure, 'stale'):
                 e.evict()
 
+    def test_host_rejects_malformed_victim_even_if_worker_validation_is_bypassed(self):
+        from unittest.mock import patch
+        e = IndependentEvictor(SOURCE)
+        self.addCleanup(e.close)
+        e.eligible[1] = 'identity'
+        e.generations[1] = 1
+        for victim in (None, {'block_id':True,'generation':1}, {'block_id':1},
+                       {'block_id':1,'generation':1,'extra':'field'}):
+            with self.subTest(victim=victim), patch.object(e, 'flush', return_value=victim):
+                with self.assertRaisesRegex(PolicyFailure, 'integer'):
+                    e.evict()
+                self.assertIn(1,e.eligible)
+
 
 if __name__ == '__main__':
     unittest.main()

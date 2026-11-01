@@ -179,6 +179,9 @@ class IndependentEvictor:
     def evict(self):
         self.decision_id += 1
         victim = self.flush(True)
+        if (not isinstance(victim, dict) or set(victim) != {'block_id', 'generation'}
+                or any(type(value) is not int for value in victim.values())):
+            raise PolicyFailure('InvalidEvictionError: victim must contain integer block_id and generation')
         block_id, generation = victim['block_id'], victim['generation']
         if block_id not in self.eligible or generation != self.generations.get(block_id):
             raise PolicyFailure(f'InvalidEvictionError: ineligible/stale victim {victim}')

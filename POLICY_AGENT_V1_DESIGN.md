@@ -2,6 +2,11 @@
 
 Status: design reference. A local v1 is implemented; see POLICY_AGENT.md for the runnable command, implemented controller interface, checks, and current limitations. Some stronger isolation/validation requirements below remain design targets. The coding agent now uses Claude restricted mode and an isolated home, not an OS sandbox; submitted policy execution retains Seatbelt isolation.
 
+The explicit `--normal-cli-auth` option uses the normal CLI account home instead of
+an isolated home, while retaining restricted/safe modes and disabling personal
+customizations. V2 is now a separate implemented interface; see
+[POLICY_INTERFACE_V2_PLAN.md](POLICY_INTERFACE_V2_PLAN.md) for its design and verification.
+
 ## Objective
 
 Build a policy optimization loop around the existing UniCache simulator. The agent starts from an existing eviction policy and optimizes overall token-weighted cache hit ratio on a fixed tune split. A separate eval split measures generalization.
