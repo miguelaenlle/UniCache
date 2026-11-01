@@ -55,6 +55,16 @@ def report(study):
                 w.writerow([label,*values])
                 if split=='eval':lines.append('| '+label+' | '+' | '.join(f'{v:.3%}' for v in values)+' |')
     lines += ['', '## Graphs', '', '![Confirmed eval headroom](headroom.png)', '', '![Tune-only budget pilot](pilot-curves.png)', '']
+    reference=study/'reference'
+    if reference.exists():
+        snapshot=json.loads((reference/'snapshot.json').read_text())
+        for name,expected in snapshot['sha256'].items():
+            if hashlib.sha256((reference/name).read_bytes()).hexdigest()!=expected:raise ValueError('Reference snapshot changed: '+name)
+        with (reference/'headroom.csv').open() as f: reference_rows=[r for r in csv.DictReader(f) if r['split']=='eval' and float(r['budget'])==.5]
+        lines += ['', '## Oversized reference (159,125 blocks; modeled 0.5A)', '',
+                  '| Trace | LRU eval | OPT eval | OPT − LRU (pp) |','|---|---:|---:|---:|']
+        for r in reference_rows:lines.append(f"| {r['trace']} | {float(r['LRU']):.3%} | {float(r['OPT']):.3%} | {float(r['OPT_minus_LRU_pp']):.4f} |")
+        lines += ['', 'The remaining oversized reference grid was stopped intentionally. Completed rows are preserved, but incomplete/missing configurations are not presented as measured results.', '']
     decisions=json.loads((study/'decisions.json').read_text())
     lines+=['','## Decisions and controls','']
     lines += ['- '+d['reason'] for d in decisions['decisions']]
@@ -63,6 +73,7 @@ def report(study):
               '- Every selected LRU/UniCache/OPT tune score replicated exactly in the fresh confirmation run. All 80 full-policy confirmations passed request/token accounting checks.',
               '- No logged preemption warnings were observed in the pilot; warnings are rate-limited, not exact preemption counts.',
               '', '## Limits', '',
+              '- The selector did not read eval data. Prior 50,000-block eval results were already known, so this is not claimed as a new blind holdout study.',
               '- These are exploratory, simulator-based results on one seeded session partition/arrival process, not hardware latency measurements or statistical confidence intervals.',
               '- OPT uses privileged future-use information and is a measured reference, not a guarantee of achievable online improvement.',
               '- The pilot compared LRU, UniCache and OPT at four budgets; selected budgets are best under the declared rule among those tested, not globally optimal.',
