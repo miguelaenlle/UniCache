@@ -14,6 +14,10 @@ HAS_TRITON = (
 )
 
 if not HAS_TRITON:
+    # PyTorch probes Triton by importing it. Load its CPU fallback before
+    # installing vLLM's placeholder, which would otherwise look like Triton.
+    import torch._inductor.compile_fx  # noqa: F401
+
     logger.info("Triton not installed or not compatible; certain GPU-related"
                 " functions will not be available.")
 

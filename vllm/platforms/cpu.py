@@ -60,6 +60,7 @@ class CpuPlatform(Platform):
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
         import vllm.envs as envs
+        from vllm.simulator.config import GLOBAL_SIMULATOR_CONFIG
         from vllm.utils import GiB_bytes
         model_config = vllm_config.model_config
         # Reminder: Please update docs/source/features/compatibility_matrix.md
@@ -74,7 +75,14 @@ class CpuPlatform(Platform):
         if cache_config and cache_config.block_size is None:
             cache_config.block_size = 128 if ipex_available else 16
 
-        if not ipex_available and cache_config.block_size != 16:
+        # Trace simulation never executes the CPU attention kernels. Permit
+        # the authors' 8-token setting only in explicit virtual-time mode.
+        simulated_8_token_blocks = (
+            cache_config.block_size == 8
+            and GLOBAL_SIMULATOR_CONFIG.simulator_enable_virtual_time
+            and not GLOBAL_SIMULATOR_CONFIG.disable_simulation)
+        if (not ipex_available and cache_config.block_size != 16
+                and not simulated_8_token_blocks):
             raise RuntimeError(
                 f"--block-size={cache_config.block_size} requires"
                 " intel_extension_for_pytorch")

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Run the upstream simulator with local, CPU-only defaults.
+set -euo pipefail
+cd "$(dirname "$0")"
+if [[ ! -x .venv/bin/python ]]; then
+  echo "Run ./setup-simulator.sh first." >&2
+  exit 1
+fi
+export VLLM_USE_V1=0
+export VLLM_NO_USAGE_STATS=1
+export PYTHONHASHSEED=0
+export MPLBACKEND=Agg
+export MPLCONFIGDIR="$PWD/.cache/matplotlib"
+export VLLM_CACHE_ROOT="$PWD/.cache/vllm"
+export VLLM_CONFIG_ROOT="$PWD/.cache/vllm-config"
+export HF_HOME="$PWD/.cache/huggingface"
+export TOKENIZERS_PARALLELISM=false
+mkdir -p "$MPLCONFIGDIR" "$VLLM_CACHE_ROOT" "$VLLM_CONFIG_ROOT"
+exec .venv/bin/python run_simulation.py \
+  --model models/Llama-3.1-8B-Instruct \
+  --max-model-len 131072 --max-num-seqs 32 --block-size 16 \
+  --enable-prefix-caching --simulator-enable-virtual-time --device cpu \
+  --simulator-num-gpu-blocks 2000 --simulator-num-cpu-blocks 0 \
+  --eviction-policy SimpleHYBRID \
+  --simulator-task-config demo/tasks_config.yaml \
+  --simulator-output-dir result/local --log-level WARNING "$@"

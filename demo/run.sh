@@ -6,7 +6,7 @@ python run_simulation.py \
     --model "./models/Llama-3.1-8B-Instruct" \
     --max-num-seqs 32 \
     --max-model-len 131072   \
-    --block-size 8 \
+    --block-size 16 \
     --enable-prefix-caching \
     --simulator-enable-virtual-time \
     --simulator-num-gpu-blocks 10000  \
