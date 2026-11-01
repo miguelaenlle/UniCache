@@ -1,6 +1,15 @@
 # Policy interface v2: implement the online baselines from scratch
 
-Status: implementation plan only. This document does not change running experiments.
+Status: the initial v2 implementation is committed as `f1b4309`; reference validation
+is recorded in [the verification report](result/policy-interface-v2/report.md).
+The sections below retain the design rationale. The implemented field names and
+commands are documented in [v2_api.md](policy_agent/v2_api.md) and
+[EXPERIMENTS.md](EXPERIMENTS.md). Existing v1 agent experiments remain separate.
+
+Implementation detail: the physical allocator uses one fixed LRU scaffold for every
+v2 policy. Its recency metadata is ignored by the independent worker, which has no
+native backing evictor. The editable source owns all algorithm bookkeeping and every
+victim decision. Private native-shadow runs are a separate validation mode.
 
 ## Goal and scope
 

@@ -272,3 +272,70 @@ source snapshots and provenance (without bulky caches/raw replay logs):
 After extracting, verify archive integrity from inside its `2026-11-01` directory:
 `shasum -a 256 -c SHA256SUMS`. Then restore inputs into a checkout as above. Reported
 score/selection reproduction does not require wall-clock timings to be identical.
+
+## Editable policy interface v2 (manual validation, no coding model)
+
+V1 remains the default for continuity with prior coding-agent experiments. V2 owns
+all policy state in editable source and makes every eviction explicitly. It receives
+the same public observation stream regardless of its starting policy. Its host uses
+one fixed physical scaffold and does not provide a native fallback algorithm.
+
+Export a starting implementation, edit that file, then replay it:
+
+```bash
+bash scripts/evaluate-policy-v2.sh export --policy UniCache \
+  --output policies/my-policy.py
+# Edit policies/my-policy.py. The class may be replaced entirely, e.g. with ARC.
+bash scripts/evaluate-policy-v2.sh evaluate \
+  --policy-file policies/my-policy.py --trace sharegpt --gpu-blocks 32768
+```
+
+To try ARC through exactly the same host configuration, replace the file with
+`bash scripts/evaluate-policy-v2.sh export --policy ARC --output policies/my-policy.py`
+and repeat the evaluate command. No other configuration changes are needed. Use
+`--sessions 20 --splits tune` for a quick check; omit `--sessions` for the prepared
+workload's normal session limit. Default evaluation runs both cold-cache tune/eval
+splits and writes policy.py, manifest.json, results.csv and results.json into a fresh
+`result/manual-policy-v2/YYYY-MM-DD/...` directory. Exact completion and token ledgers
+are verified by the trusted evaluator. NONE is a startup disabled-cache control;
+offline OPT cannot be exported because it requires future information.
+
+Run independent native-versus-v2 verification and private shadow audits:
+
+```bash
+bash scripts/test-policy-interface-v2.sh --sessions 64 --jobs 4 \
+  --max-num-seqs 32 --output result/policy-interface-v2/reproduce-fixed
+bash scripts/test-policy-interface-v2.sh --traces \
+  --policies UniCache ARC LeCaR WA --jobs 2 --shadow --max-num-seqs 4 \
+  --output result/policy-interface-v2/reproduce-shadow
+```
+
+The first command checks all 12 online/disabled reference sources on five real
+prefixes and one synthetic mixed workload. Every v2 policy uses host LRU; only its
+editable source changes. It compares every eviction ID/hash, exact hit/prompt totals
+and completion ledgers. The second command leaves native policies controlling their
+runs while isolated editable copies must propose identical victims. Incorrect
+decisions fail immediately, with private first-difference diagnostics.
+
+The contract and implementation tests also exercise real allocation, shared active
+blocks, copy-on-write, slot generations, reset and deliberate policy mismatch:
+
+```bash
+.venv-sim312/bin/python -m unittest \
+  policy_agent.test_v2_worker policy_agent.test_v2_policies \
+  policy_agent.test_events policy_agent.test_v2_lifecycle \
+  policy_agent.test_local_runner policy_agent.test_sandbox
+```
+
+These commands require macOS Seatbelt and the existing Python 3.12 environment.
+Run them from a normal terminal; an enclosing OS sandbox may prevent starting the
+worker's own sandbox. No coding-model authentication is needed. These validations
+use eight-token blocks; offload/distributed configurations and other block sizes
+need their own parity checks. The existing native online helper has eight-token
+hashing assumptions, which this work does not silently change.
+
+For a future coding-agent run, explicitly add `--policy-interface v2` to the existing
+`./policy-agent run ...` command. Its starting policy is complete editable source;
+other baseline implementations, baseline scores, eval inputs and offline maps remain
+outside the coding workspace. The public smoke test and custom Python test launcher
+support v2. This interface's reference validation is not an LLM rediscovery result.

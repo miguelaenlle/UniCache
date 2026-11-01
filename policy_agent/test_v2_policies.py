@@ -73,6 +73,14 @@ class V2PoliciesTests(unittest.TestCase):
         self.assertEqual(p.algorithm.p,1)
         self.assertNotIn(str(victim),p.algorithm.B1)
 
+    def test_specialization_preserves_value_returning_or(self):
+        scope={}
+        exec(source_for_policy('UniCache'),scope)
+        scope['Policy']({'capacity':10,'block_size':8})
+        block=scope['SimpleHYBRIDlockMetaData']('x',8,0.,1,scope['TaskType'].SINGLE_TURN,False)
+        score=block.calculate_priority(2048,{'single':1.})
+        self.assertAlmostEqual(score,1-8/2048)
+
     def test_unicache_evict_first(self):
         p=make('UniCache')
         create(p,0);create(p,1)

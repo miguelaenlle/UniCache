@@ -102,21 +102,29 @@ class _Specialize(ast.NodeTransformer):
         return self._constant(self.generic_visit(node))
 
     def visit_BoolOp(self, node):
-        node = self.generic_visit(node)
-        if isinstance(node.op,ast.And):
+        # Outside a predicate, Python and/or return operand values, not bools.
+        # In particular max_offset or 1 must retain a dynamic nonzero offset.
+        return self._constant(self.generic_visit(node))
+
+    def _predicate(self, node):
+        if not isinstance(node, ast.BoolOp):
+            return node
+        node.values=[self._predicate(v) for v in node.values]
+        if isinstance(node.op, ast.And):
             if any(isinstance(v,ast.Constant) and not v.value for v in node.values):
-                return ast.copy_location(ast.Constant(False),node)
-            node.values = [v for v in node.values if not(isinstance(v,ast.Constant) and v.value)]
-            if not node.values: return ast.copy_location(ast.Constant(True),node)
+                return ast.Constant(False)
+            node.values=[v for v in node.values if not(isinstance(v,ast.Constant) and v.value)]
+            if not node.values:return ast.Constant(True)
         else:
             if any(isinstance(v,ast.Constant) and v.value for v in node.values):
-                return ast.copy_location(ast.Constant(True),node)
-            node.values = [v for v in node.values if not(isinstance(v,ast.Constant) and not v.value)]
-            if not node.values: return ast.copy_location(ast.Constant(False),node)
+                return ast.Constant(True)
+            node.values=[v for v in node.values if not(isinstance(v,ast.Constant) and not v.value)]
+            if not node.values:return ast.Constant(False)
         return node.values[0] if len(node.values)==1 else node
 
     def visit_If(self, node):
         node = self.generic_visit(node)
+        node.test = self._predicate(node.test)
         if isinstance(node.test, ast.Constant):
             return node.body if node.test.value else node.orelse
         if not node.body:
@@ -125,6 +133,7 @@ class _Specialize(ast.NodeTransformer):
 
     def visit_IfExp(self, node):
         node = self.generic_visit(node)
+        node.test = self._predicate(node.test)
         if isinstance(node.test, ast.Constant):
             return node.body if node.test.value else node.orelse
         if not node.body:
