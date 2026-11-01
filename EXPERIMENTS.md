@@ -205,3 +205,20 @@ files). The run manifest pins full source-data checksums and each frozen split's
 configuration/data hashes. Source data and weights are not bundled into git; model
 weights are not needed. Exact generated split inputs are deterministic from the
 pinned source files, source limits and seeds.
+
+After the pilot has completed, the deterministic selection and confirmation are:
+
+```bash
+.venv-sim312/bin/python scripts/select_cache_budgets.py \
+  --pilot result/cache-budget-study/2026-11-01/pilot \
+  --output result/cache-budget-study/2026-11-01/selection.json
+bash result/cache-budget-study/2026-11-01/selection.sh
+```
+
+The selector refuses incomplete pilots or pilots including eval. It saves all
+candidate scores, selected budgets, input hash and exact confirmation commands.
+Its generated shell script runs the five confirmations sequentially, four replays
+at a time, each with the full main-policy set and both frozen splits. Use a fresh
+output root to repeat the complete study without overwriting prior results.
+Each actual run also has `reproduce.json` and a source snapshot; no manual spreadsheet
+editing or undocumented budget selection is required.
