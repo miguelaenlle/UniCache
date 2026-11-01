@@ -147,3 +147,25 @@ All prepared session files use the unchanged `prepare_session_data.py` with
 the Llama-3.2-1B-Instruct tokenizer. Original random sampling and UUID behavior
 were retained; generated files are frozen by SHA-256 for policy comparisons,
 but are not claimed to match the authors' exact sampled files.
+
+## 1B cache-budget sweep
+
+`bash scripts/run-cache-budget-sweep.sh --jobs 8` runs the eight main policies on
+all five prepared workloads, on both frozen tune and eval splits, at 0.5A/0.7A/0.9A.
+The model, timing formula, original standalone source limits, seeds and scheduler
+settings match the preceding agent batch. No agent/API calls occur.
+
+Memory convention: idealized A100 with 80 GiB total memory; A is total minus the
+FP16 weight storage calculated from the local tied-embedding model configuration
+(1,235,814,400 parameters). This does not reserve or measure runtime activation and
+workspace memory. FP16 KV cache: 262,144 bytes per 8-token block, TP=1. Thus A is
+77.6981163 GiB, and the three capacities are 159,125 / 222,776 / 286,426 blocks.
+This is an explicit modeled normalization, not calibrated physical GPU reproduction.
+
+Each policy replay validates actual request completion and prompt/response token
+counts. OPT uses a separate no-cache profile for every budget/trace/split. Outputs:
+`manifest.json` (memory conversion and input hashes), `hit_ratios.csv`, `headroom.csv`,
+`report.md`, and `completion.json` (all cases required; failures never become zero).
+Best online policy is chosen from tune scores and then reported on eval, preventing
+selection on eval. OPT gaps are measured reference gaps, not guaranteed achievable
+online gains. A small test can use `--traces sharegpt --sessions 4`.
