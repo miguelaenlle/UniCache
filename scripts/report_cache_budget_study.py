@@ -56,7 +56,7 @@ def report(study):
            '|---|---:|---:|---|---:|---:|---:|---:|']
     for r in evaluations:
         l,b,o=map(float,[r['LRU'],r['best_online_hit_ratio'],r['OPT']])
-        lines.append(f"| {r['trace'] + (' (counterpoint)' if r['configuration']=='counterpoint' else '')} | {r['gpu_blocks']:,} | {l:.3%} | {r['best_online_by_tune']} | {b:.3%} | {o:.3%} | {float(r['online_minus_LRU_pp']):+.3f} | {float(r['OPT_minus_LRU_pp']):+.3f} |")
+        lines.append(f"| {r['trace'] + (' (counterpoint)' if r['configuration']=='counterpoint' else '')} | {r['gpu_blocks']:,} | {l:.3%} | {('UniCache' if r['best_online_by_tune']=='SimpleHYBRID' else r['best_online_by_tune'])} | {b:.3%} | {o:.3%} | {float(r['online_minus_LRU_pp']):+.3f} | {float(r['OPT_minus_LRU_pp']):+.3f} |")
     lines += ['', '## All baseline eval results', '',
               'Columns use the selected cache budget for each workload; these budgets differ.', '',
               '| Policy | '+' | '.join(selection['selections'])+' |', '|---|'+'---:|'*len(selection['selections'])]
@@ -92,6 +92,7 @@ def report(study):
               '', '## Limits', '',
               '- The selector did not read eval data. Prior 50,000-block eval results were already known, so this is not claimed as a new blind holdout study.',
               '- These are exploratory, simulator-based results on one seeded session partition/arrival process, not hardware latency measurements or statistical confidence intervals.',
+              '- No agent optimization was run here; baseline headroom does not guarantee that the current restricted agent interface can attain it.',
               '- OPT uses privileged future-use information and is a measured reference, not a guarantee of achievable online improvement.',
               '- The pilot compared LRU, UniCache and OPT at four budgets; selected budgets are best under the declared rule among those tested, not globally optimal.',
               '- Runtime timing uses the existing 1B approximation unchanged. Source subsets are the authors’ standalone limits, not the paper’s mixed Traces #1–3.',
