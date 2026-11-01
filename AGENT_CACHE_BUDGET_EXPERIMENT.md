@@ -52,7 +52,8 @@ Output files:
 - `manifest.json`: frozen runtime revision/digest, budgets, traces and policy list.
 - `prepared/`: frozen split paths, hashes and expected completion ledger.
 - `baselines/`: private validated aggregate scores and replay-artifact checksums.
-- `agent-logs/`: concise terminal progress (full agent logs remain disabled).
+- `agent-logs/`: whitelisted host progress only (submission/replay/status/heartbeats);
+  coding-model text, thinking and tool calls are filtered before persistence.
 - `agent-runs/`: explicit selected run paths and submission counts.
 - `scores.csv`, `report.md`: tune/eval policy-by-workload tables for every budget.
 - `headroom.csv`: OPT−LRU, Agent−LRU and their ratio for each case/split.

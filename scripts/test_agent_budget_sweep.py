@@ -1,4 +1,5 @@
 import json
+import io
 import os
 from pathlib import Path
 import tempfile
@@ -9,6 +10,13 @@ from scripts import agent_budget_sweep as sweep
 
 
 class BudgetAgentTests(unittest.TestCase):
+    def test_persisted_console_excludes_agent_actions_and_multiline_text(self):
+        target=io.StringIO();stream=sweep.ProgressOnly(target)
+        stream.write('[Claude] Bash: secret-tool-details\nassistant continuation\n')
+        stream.write('Submission 1: ');stream.write('ok\n')
+        stream.write('HEARTBEAT trace: 1 minute\n')
+        self.assertEqual(target.getvalue(),'Submission 1: ok\nHEARTBEAT trace: 1 minute\n')
+
     def test_cache_rejects_modified_private_artifacts(self):
         with tempfile.TemporaryDirectory() as d:
             out=Path(d);parent=out/'replay';parent.mkdir()

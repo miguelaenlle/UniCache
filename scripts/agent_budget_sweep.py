@@ -24,6 +24,25 @@ BUDGETS = [16384, 32768, 50000, 98304]
 TRACES = list(runner.TRACE_CONFIGS)
 
 
+class ProgressOnly:
+    """Keep host progress; never persist coding-model text, thinking or tool calls."""
+    prefixes=('Results: ','Baseline ','Replay ','Cached baseline ','Submission ',
+              'Starting ','Finished.','HEARTBEAT ','ERROR:','Local test: ')
+
+    def __init__(self,stream):
+        self.stream=stream;self.buffers={};self.lock=threading.RLock()
+
+    def write(self,value):
+        with self.lock:
+            key=threading.get_ident();text=self.buffers.get(key,'')+value
+            lines=text.split('\n');self.buffers[key]=lines.pop()
+            for line in lines:
+                if line.startswith(self.prefixes):self.stream.write(line+'\n')
+        return len(value)
+
+    def flush(self):self.stream.flush()
+
+
 def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     runner.write(path, value)
@@ -89,6 +108,7 @@ def baselines(out, blocks, trace):
 
 
 def run_one(out, blocks, trace, cap, coding_model, normal_auth=False):
+    terminal=sys.stdout;sys.stdout=ProgressOnly(terminal)
     # Each coding case owns its process group so the deadline can stop only its
     # own runner/Claude/worker descendants. No other experiment process is killed.
     if os.getpgrp()!=os.getpid():os.setsid()
@@ -119,7 +139,8 @@ def run_one(out, blocks, trace, cap, coding_model, normal_auth=False):
                 '--max-submissions',str(cap),'--gpu-blocks',str(blocks)]
     if normal_auth:sys.argv.append('--normal-cli-auth')
     try:runner.main()
-    finally:done.set()
+    finally:
+        done.set();sys.stdout.flush();sys.stdout=terminal
 
 
 def agent(out, blocks, trace, cap, coding_model, normal_auth=False, wait=False):
