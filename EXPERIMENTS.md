@@ -259,3 +259,16 @@ and counterpoint confirmations finish:
 .venv-sim312/bin/python scripts/report_cache_budget_study.py \
   --study result/cache-budget-study/2026-11-01
 ```
+
+For a portable bundle of the reports, prepared input prefixes/model metadata,
+source snapshots and provenance (without bulky caches/raw replay logs):
+
+```bash
+.venv-sim312/bin/python scripts/pack_budget_study.py \
+  --study result/cache-budget-study/2026-11-01 \
+  --output result/cache-budget-study-1b-headroom.tar.gz
+```
+
+After extracting, verify archive integrity from inside its `2026-11-01` directory:
+`shasum -a 256 -c SHA256SUMS`. Then restore inputs into a checkout as above. Reported
+score/selection reproduction does not require wall-clock timings to be identical.
