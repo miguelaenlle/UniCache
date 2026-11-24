@@ -133,6 +133,39 @@ measured ones, then check request-level TTFT/ITL against a real replay.
   not UniCache's v0 fork, and they exclude Python/scheduler overhead. That is
   what `overhead_ms` is for, and it is large for a 1B model.
 
+## First results (uncalibrated tables, 2026-11-24)
+
+CodeParrot, 8 GiB budget (32,768 blocks), eval split, exact recorded commands
+re-run with `--simulator-timing aic` and `--arrival-scale` from 1 down to 0.01
+(1x to 100x the recorded arrival rate). "Agent" is the H1 agent's selected
+policy (submission 20). Output: `result/aic-timing/codeparrot-32768-load-sweep/`
+(`sweep.csv`, `ttft_vs_load.png`).
+
+Mean TTFT, Llama-3.1-8B shapes on `a100_sxm` tables:
+
+| Load | LRU | UniCache | Agent | OPT |
+|---:|---:|---:|---:|---:|
+| 1x | 31 ms | 28 ms (0.88x) | 28 ms (0.90x) | 25 ms (0.79x) |
+| 3x | 33 ms | 29 ms (0.88x) | 30 ms (0.90x) | 26 ms (0.78x) |
+| 10x | 11.6 s | 8.5 s (0.73x) | 9.1 s (0.78x) | 6.5 s (0.56x) |
+| 33x | 95 s | 92 s (0.97x) | 93 s (0.97x) | 90 s (0.95x) |
+
+Hit ratios: LRU 0.415, Agent 0.525–0.530, UniCache 0.548–0.555, OPT 0.682.
+
+Reading:
+* Hit-ratio gains now show up as latency gains. Under legacy timing every
+  policy had identical TTFT (26.29 ms), because prefill was charged by full
+  prompt length.
+* The benefit peaks near saturation (10x here). Below it, TTFT is mostly
+  prefill time and differences are 10–20%. Far past it, queueing swamps
+  everything. This matches the paper's Table 5 pattern, where the most loaded
+  trace has the largest absolute gaps.
+* Llama-3.2-1B on `h100_sxm` saturates only near 100x, and the differences
+  are smaller (0.92–0.94x LRU for UniCache and Agent). A 1B model on an
+  H100-class GPU has little prefill to save.
+* These use uncalibrated tables; tomorrow's GPU calibration changes the
+  absolute numbers, and possibly where saturation sits.
+
 ## Known limitations
 
 * The calibration is linear per phase. Batches mixing prefill and decode don't

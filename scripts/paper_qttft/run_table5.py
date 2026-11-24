@@ -107,19 +107,30 @@ def simulate(policy, task_config, run_dir: Path, args, use_map=None):
     return sorted(run_dir.glob("*/summary.json"))[-1].parent
 
 
+def latest_result(run_dir: Path) -> Path:
+    return sorted(run_dir.glob("*/summary.json"))[-1].parent
+
+
 def run_trace(label, name, args, pool):
     out = Path(args.out) / label
-    task_config = trace_config(name, out, args.arrival_scale)
-    # OPT needs the future-use map from a no-cache profile of the same trace.
-    profile = pool.submit(simulate, "NONE", task_config, out / "NONE", args)
-    futures = {p: pool.submit(simulate, e, task_config, out / e, args)
-               for p, e in POLICIES.items() if e != "OPT"}
-    use_map = profile.result() / "use_map.json"
-    futures["OPT (Offline)"] = pool.submit(simulate, "OPT", task_config,
-                                           out / "OPT", args, use_map)
+    if not args.table_only:
+        task_config = trace_config(name, out, args.arrival_scale)
+        # OPT needs the future-use map from a no-cache profile of the trace.
+        profile = pool.submit(simulate, "NONE", task_config, out / "NONE", args)
+        futures = [pool.submit(simulate, e, task_config, out / e, args)
+                   for e in POLICIES.values() if e != "OPT"]
+        use_map = profile.result() / "use_map.json"
+        futures.append(pool.submit(simulate, "OPT", task_config, out / "OPT",
+                                   args, use_map))
+        for f in futures:
+            f.result()
     rows = []
-    for paper_name, paper_value in zip(POLICIES, PAPER_QTTFT_S[label]):
-        result = futures[paper_name].result()
+    for (paper_name, engine), paper_value in zip(POLICIES.items(),
+                                                PAPER_QTTFT_S[label]):
+        run_dir = out / engine
+        if engine == "OPT" and (out / "OPT-refined").is_dir():
+            run_dir = out / "OPT-refined"  # see refine_opt.py
+        result = latest_result(run_dir)
         lat = json.loads((result / "latency_summary.json").read_text())
         hits = json.loads((result / "summary.json").read_text())["hit_rate_summary"]
         rows.append({"trace": label, "policy": paper_name,
@@ -127,7 +138,8 @@ def run_trace(label, name, args, pool):
                      "sim_qttft_s": lat["ttft_s"]["mean"],
                      "sim_qttft_p90_s": lat["ttft_s"]["p90"],
                      "sim_hit_rate": hits["global_hit_rate"],
-                     "requests": lat["completed_requests"]})
+                     "requests": lat["completed_requests"],
+                     "run": str(run_dir.relative_to(Path(args.out)))})
     return rows
 
 
@@ -145,6 +157,8 @@ def main():
     p.add_argument("--arrival-scale", type=float, default=1.0)
     p.add_argument("--traces", nargs="+", default=list(TRACES))
     p.add_argument("--jobs", type=int, default=9)
+    p.add_argument("--table-only", action="store_true",
+                   help="rebuild table5.md/csv from existing run directories")
     args = p.parse_args()
     args.blocks = int(args.budget * args.kv_gib * 2**30
                       // kv_bytes_per_block(Path(args.model), args.block_size))
