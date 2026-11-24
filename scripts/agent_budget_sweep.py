@@ -148,7 +148,10 @@ def run_one(out, blocks, trace, cap, coding_model, normal_auth=False):
     runner.Evaluator.replay = replay
     command=runner.claude_command
     def synchronous_command(sandbox,model):
+        from policy_agent.client_python import install_client_python
+        install_client_python(sandbox)
         cmd,env=command(sandbox,model)
+        cmd += ['--disallowedTools','Edit(./bin/**),Write(./bin/**),Edit(./bin),Write(./bin)']
         env.update(CLAUDE_CODE_DISABLE_BACKGROUND_TASKS='1',
                    BASH_DEFAULT_TIMEOUT_MS='1800000',BASH_MAX_TIMEOUT_MS='1800000')
         return cmd,env
@@ -224,6 +227,9 @@ def report(out, budgets, traces):
                           for p in online if cache_path(out,blocks,trace,p,'tune').exists()}
                     best=max(online,key=lambda p:tune[p]) if len(tune)==len(online) else None
                     best_score=values.get(best) if best else None
+                    simple=['LRU','LFU','FIFO']
+                    best_simple=max(simple,key=lambda p:tune[p]) if all(p in tune for p in simple) else None
+                    simple_score=values.get(best_simple) if best_simple else None
                     note=('agent exceeds measured offline reference' if parsed and values['Agent']>values['OPT']+1e-12
                           else 'nonpositive reference gap' if gap<=0 else '')
                     head.append([blocks,trace,split,values['LRU'],values['OPT'],values['Agent'],
@@ -231,19 +237,27 @@ def report(out, budgets, traces):
                                  gain/gap if gain is not None and gap>0 else None,
                                  parsed['attempts'] if parsed else None,best,best_score,
                                  100*(best_score-values['LRU']) if best_score is not None else None,
-                                 100*(values['Agent']-best_score) if parsed and best_score is not None else None,note])
+                                 100*(values['Agent']-best_score) if parsed and best_score is not None else None,note,
+                                 best_simple,simple_score,
+                                 100*(values['Agent']-simple_score) if parsed and simple_score is not None else None,
+                                 100*(values['OPT']-values['Agent']) if parsed else None])
     for name,columns,data in [
         ('scores.csv',['gpu_blocks','trace','split','policy','hit_ratio'],rows),
         ('headroom.csv',['gpu_blocks','trace','split','LRU','OPT','Agent','OPT_minus_LRU_pp',
                          'Agent_minus_LRU_pp','fraction_reference_gain_achieved','attempts',
                          'best_online_by_tune','best_online_hit_ratio','best_online_minus_LRU_pp',
-                         'Agent_minus_best_online_pp','reference_gap_note'],head)]:
+                         'Agent_minus_best_online_pp','reference_gap_note',
+                         'best_simple_by_tune','best_simple_hit_ratio','Agent_minus_best_simple_pp',
+                         'OPT_minus_Agent_pp'],head)]:
         with (out/name).open('w',newline='') as f:
             w=csv.writer(f);w.writerow(columns);w.writerows(data)
     md=['# V1 agent cache-budget experiment','',
         'Llama-3.2-1B-Instruct; 8-token blocks; LRU start; Claude Opus; 30-attempt cap (early stopping allowed).',
-        'Policy selected by tune only; independent cold tune/eval caches. Blank cells mean pending, never zero.',
+        'Policy selected by tune only; independent cold tune/eval caches. Blank cells mean unavailable (pending or failed), never zero.',
         'OPT is privileged offline reference headroom, not a guaranteed online-achievable improvement. All comparisons remain hidden from the coding agent.',
+        'Best simple heuristic is selected from LRU, LFU and FIFO. Best heuristic is selected from all implemented online baselines (including UniCache); offline OPT and NONE are excluded.',
+        'Both baseline identities maximize tune hit ratio separately for each workload and budget; their eval scores use those same identities. Ties use the first policy in the listed candidate order.',
+        'Simple tie order: LRU, LFU, FIFO. Online tie order: '+', '.join(p for p in runner.ALL_POLICIES if p not in ['OPT','NONE'])+'.',
         'V1 retains starting-policy-dependent bookkeeping. V2 is a separate experiment.','']
     model=json.loads((ROOT/'models/Llama-3.2-1B-Instruct/config.json').read_text())
     head_dim=model.get('head_dim',model['hidden_size']//model['num_attention_heads'])
@@ -272,13 +286,83 @@ def report(out, budgets, traces):
                     cells.append(f'{100*match[0]:.4f}%' if match and match[0] is not None else '—')
                 md.append('| '+policy+' | '+' | '.join(cells)+' |')
             md += ['']
-    md += ['## Eval headroom','', '| Blocks | Trace | OPT − LRU | Agent − LRU | Fraction of reference gain |', '|---:|---|---:|---:|---:|']
+    md += ['## Eval headroom','', '| Blocks | Trace | OPT − LRU | Agent − LRU | Best simple heuristic (tune) | Agent − best simple | Best heuristic (tune) | Agent − best heuristic | Fraction of reference gain |', '|---:|---|---:|---:|---|---:|---|---:|---:|']
     for row in head:
         blocks,trace,split,lru,opt,value,gap,gain,fraction,attempts=row[:10]
         if split=='eval':
             gained=f'{gain:.3f} pp' if gain is not None else '—'
             part=f'{fraction:.1%}' if fraction is not None else ('n/a' if gain is not None else '—')
-            md.append(f'| {blocks:,} | {LABELS[trace]} | {gap:.3f} pp | {gained} | {part} |')
+            simple_gain=f'{row[17]:.3f} pp' if row[17] is not None else '—'
+            heuristic_gain=f'{row[13]:.3f} pp' if row[13] is not None else '—'
+            md.append(f'| {blocks:,} | {LABELS[trace]} | {gap:.3f} pp | {gained} | {row[15] or "—"} | {simple_gain} | {row[10] or "—"} | {heuristic_gain} | {part} |')
+    md += ['', '## Agent versus offline OPT (eval)', '',
+           'Change = Agent − LRU. Remaining headroom = OPT − Agent. Headroom attained = (Agent − LRU) / (OPT − LRU). '
+           'The percentage is undefined when OPT equals LRU; missing agent results stay blank.', '',
+           '| Modeled KV capacity (GiB) | Trace | LRU tune (%) | Agent tune (%) | Change tune (pp) | OPT − LRU tune (pp) | OPT − Agent tune (pp) | LRU eval (%) | Agent eval (%) | Change eval (pp) | OPT − LRU eval (pp) | OPT − Agent eval (pp remaining) | Eval headroom attained (%) |',
+           '|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
+    opt_rows=[]
+    for row in head:
+        blocks,trace,split,lru,opt,value,gap,gain,fraction,attempts=row[:10]
+        if split!='eval':continue
+        remaining=row[18]
+        gib=blocks*block_bytes/2**30
+        tune_values={r[3]:r[4] for r in rows if r[:3]==[blocks,trace,'tune']}
+        tune_lru=tune_values['LRU'];tune_agent=tune_values.get('Agent')
+        tune_gain=100*(tune_agent-tune_lru) if tune_agent is not None else None
+        tune_gap=100*(tune_values['OPT']-tune_lru)
+        tune_remaining=100*(tune_values['OPT']-tune_agent) if tune_agent is not None else None
+        tune_remaining_text=f'{tune_remaining:.3f}' if tune_remaining is not None else '—'
+        tune_agent_text=f'{100*tune_agent:.2f}%' if tune_agent is not None else '—'
+        tune_gain_text=f'{tune_gain:+.3f}' if tune_gain is not None else '—'
+        agent=f'{100*value:.2f}%' if value is not None else '—'
+        change=f'{gain:+.3f}' if gain is not None else '—'
+        left=f'{remaining:.3f}' if remaining is not None else '—'
+        attained=f'{100*fraction:.1f}%' if fraction is not None else ('n/a' if value is not None else '—')
+        md.append(f'| {gib:g} | {LABELS[trace]} | {100*tune_lru:.2f}% | {tune_agent_text} | {tune_gain_text} | {tune_gap:.3f} | {tune_remaining_text} | {100*lru:.2f}% | {agent} | {change} | {gap:.3f} | {left} | {attained} |')
+        opt_rows.append([gib,trace,tune_lru,tune_agent,tune_gain,tune_gap,tune_remaining,
+                         lru,value,gain,gap,remaining,100*fraction if fraction is not None else None])
+    with (out/'agent-vs-opt-eval.csv').open('w',newline='') as f:
+        w=csv.writer(f)
+        w.writerow(['modeled_kv_gib','trace','lru_tune_hit_ratio','agent_tune_hit_ratio','Agent_minus_LRU_tune_pp',
+                    'OPT_minus_LRU_tune_pp','OPT_minus_Agent_tune_pp',
+                    'lru_hit_ratio','agent_hit_ratio','Agent_minus_LRU_pp',
+                    'OPT_minus_LRU_pp','OPT_minus_Agent_pp_remaining','headroom_attained_percent'])
+        w.writerows(opt_rows)
+    heuristic_md=['## Agent versus tune-selected best online heuristic', '',
+                  'Capacity is modeled GiB; hit ratios are percentages; differences are percentage points (pp). '
+                  'Best is selected on tune from all online baselines, excluding offline OPT and NONE. '
+                  'The same selected heuristic is used on eval. Positive Best − Agent means the heuristic is ahead.', '',
+                  '| KV capacity (GiB) | Trace | LRU tune (%) | Agent tune (%) | Change tune (pp) | OPT − LRU tune (pp) | OPT − Agent tune (pp) | LRU eval (%) | Agent eval (%) | Change eval (pp) | Best heuristic (selected on tune) | Best − Agent tune (pp) | Best − Agent eval (pp) |',
+                  '|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|']
+    heuristic_rows=[]
+    for row in head:
+        blocks,trace,split,lru,opt,value,gap,gain,fraction,attempts=row[:10]
+        if split!='eval':continue
+        tune_row=next(r for r in head if r[:3]==[blocks,trace,'tune'])
+        best=row[10]
+        assert best==tune_row[10]
+        tune_lru=tune_row[3];tune_agent=tune_row[5]
+        tune_gain=tune_row[7]
+        tune_gap=tune_row[6];tune_remaining=tune_row[18]
+        tune_best=tune_row[11];eval_best=row[11]
+        tune_difference=100*(tune_best-tune_agent) if tune_agent is not None else None
+        eval_difference=100*(eval_best-value) if value is not None else None
+        gib=blocks*block_bytes/2**30
+        pct=lambda v:f'{100*v:.2f}' if v is not None else '—'
+        delta=lambda v:f'{v:+.3f}' if v is not None else '—'
+        heuristic_md.append(f'| {gib:g} | {LABELS[trace]} | {pct(tune_lru)} | {pct(tune_agent)} | {delta(tune_gain)} | {tune_gap:.3f} | {delta(tune_remaining)} | {pct(lru)} | {pct(value)} | {delta(gain)} | {best} | {delta(tune_difference)} | {delta(eval_difference)} |')
+        heuristic_rows.append([gib,trace,tune_lru,tune_agent,tune_gain,tune_gap,tune_remaining,lru,value,gain,
+                               best,tune_best,eval_best,tune_difference,eval_difference])
+    with (out/'agent-vs-best-heuristic.csv').open('w',newline='') as f:
+        w=csv.writer(f)
+        w.writerow(['modeled_kv_gib','trace','lru_tune_hit_ratio','agent_tune_hit_ratio','Agent_minus_LRU_tune_pp',
+                    'OPT_minus_LRU_tune_pp','OPT_minus_Agent_tune_pp',
+                    'lru_eval_hit_ratio','agent_eval_hit_ratio','Agent_minus_LRU_eval_pp',
+                    'best_heuristic_selected_on_tune','best_heuristic_tune_hit_ratio','best_heuristic_eval_hit_ratio',
+                    'Best_minus_Agent_tune_pp','Best_minus_Agent_eval_pp'])
+        w.writerows(heuristic_rows)
+    (out/'agent-vs-best-heuristic.md').write_text('\n'.join(heuristic_md)+'\n')
+    md += ['',*heuristic_md]
     md += ['', '![Eval hit ratios across cache budgets](hit-ratio-by-budget.png)',
            '', 'Coincident curves indicate equal scores; open/different markers distinguish overlapping policies. Best baseline is selected on tune, then plotted on eval.',
            'Frozen policy replays are reproducible; a fresh Opus coding run may choose different policies or stop at a different attempt. See environment.json for the requested alias and CLI version.',

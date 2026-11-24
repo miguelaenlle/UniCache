@@ -1,4 +1,5 @@
 import json
+import csv
 import io
 import os
 from pathlib import Path
@@ -10,6 +11,56 @@ from scripts import agent_budget_sweep as sweep
 
 
 class BudgetAgentTests(unittest.TestCase):
+    def test_report_selects_both_heuristics_on_tune_and_measures_them_on_eval(self):
+        with tempfile.TemporaryDirectory() as d:
+            out=Path(d);trace='sharegpt';blocks=16384
+            model=out/'models/Llama-3.2-1B-Instruct/config.json'
+            model.parent.mkdir(parents=True)
+            model.write_text(json.dumps({'hidden_size':16,'num_attention_heads':2,
+                                         'num_hidden_layers':2,'num_key_value_heads':1}))
+            tune={'LRU':.8,'LFU':.7,'FIFO':.6,'UniCache':.9,'OPT':1.0}
+            evaluation={'LRU':.4,'LFU':.95,'FIFO':.8,'UniCache':.3,'OPT':.99}
+            for policy in sweep.runner.ALL_POLICIES:
+                for split in ['tune','eval']:
+                    p=sweep.cache_path(out,blocks,trace,policy,split)
+                    p.parent.mkdir(parents=True,exist_ok=True);p.write_text('{}')
+            sweep.write(out/'agent-runs'/str(blocks)/(trace+'.json'),{'run':str(out/'agent')})
+            parsed={'table':{'Agent':{'tune':.91,'eval':.5}},'attempts':3}
+            def score(_out,_blocks,_trace,policy,split):
+                values=tune if split=='tune' else evaluation
+                return {'token_weighted_hit_ratio':values.get(policy,.1)},out
+            with patch.object(sweep,'ROOT',out),patch.object(sweep,'cached',side_effect=score), \
+                 patch.object(sweep,'read_run'),patch.object(sweep,'validate',return_value=parsed):
+                sweep.report(out,[blocks],[trace])
+            with (out/'headroom.csv').open() as f:
+                rows=list(csv.DictReader(f))
+            for row in rows:
+                self.assertEqual(row['best_simple_by_tune'],'LRU')
+                self.assertEqual(row['best_online_by_tune'],'UniCache')
+            row=next(r for r in rows if r['split']=='eval')
+            self.assertAlmostEqual(float(row['best_simple_hit_ratio']),.4)
+            self.assertAlmostEqual(float(row['Agent_minus_best_simple_pp']),10)
+            self.assertAlmostEqual(float(row['best_online_hit_ratio']),.3)
+            self.assertAlmostEqual(float(row['Agent_minus_best_online_pp']),20)
+            self.assertAlmostEqual(float(row['OPT_minus_Agent_pp']),49)
+            with (out/'agent-vs-opt-eval.csv').open() as f:
+                opt_row=next(csv.DictReader(f))
+            self.assertAlmostEqual(float(opt_row['OPT_minus_Agent_pp_remaining']),49)
+            self.assertAlmostEqual(float(opt_row['headroom_attained_percent']),100*10/59)
+            self.assertAlmostEqual(float(opt_row['lru_tune_hit_ratio']),.8)
+            self.assertAlmostEqual(float(opt_row['agent_tune_hit_ratio']),.91)
+            self.assertAlmostEqual(float(opt_row['Agent_minus_LRU_tune_pp']),11)
+            self.assertAlmostEqual(float(opt_row['OPT_minus_LRU_tune_pp']),20)
+            self.assertAlmostEqual(float(opt_row['OPT_minus_Agent_tune_pp']),9)
+            with (out/'agent-vs-best-heuristic.csv').open() as f:
+                heuristic_row=next(csv.DictReader(f))
+            self.assertEqual(heuristic_row['best_heuristic_selected_on_tune'],'UniCache')
+            self.assertAlmostEqual(float(heuristic_row['Best_minus_Agent_tune_pp']),-1)
+            self.assertAlmostEqual(float(heuristic_row['Best_minus_Agent_eval_pp']),-20)
+            self.assertAlmostEqual(float(heuristic_row['OPT_minus_LRU_tune_pp']),20)
+            self.assertAlmostEqual(float(heuristic_row['OPT_minus_Agent_tune_pp']),9)
+            self.assertIn('Best simple heuristic (tune)',(out/'report.md').read_text())
+
     def test_normal_cli_exit_before_submission_feedback_is_not_success(self):
         with tempfile.TemporaryDirectory() as d:
             run=Path(d);(run/'sandbox/feedback').mkdir(parents=True)
