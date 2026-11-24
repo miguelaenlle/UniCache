@@ -80,6 +80,36 @@ def parser_args():
         type=float,
         default=0.01,
         help="Simulated Time-To-Output-Token (TOPT) in seconds.")
+    # === Step timing (see vllm/simulator/step_timing.py, docs/aic-timing.md) ===
+    parser.add_argument(
+        "--simulator-timing",
+        choices=["legacy", "aic"],
+        default="legacy",
+        help=("Per-step latency model. 'legacy': --simulator-ttft/-tpot "
+              "formula. 'aic': NVIDIA aiconfigurator tables for the GPU in "
+              "--simulator-aic-system, charging prefill by uncached tokens."))
+    parser.add_argument(
+        "--simulator-aic-system",
+        default="h100_sxm",
+        help="aiconfigurator GPU, e.g. a100_sxm, h100_sxm, h200_sxm.")
+    parser.add_argument(
+        "--simulator-aic-model",
+        default=None,
+        help=("Model whose shapes are priced (HF id or local dir with "
+              "config.json). Defaults to --model."))
+    parser.add_argument(
+        "--simulator-aic-backend-version",
+        default=None,
+        help="aiconfigurator vLLM data version; default: newest shipped.")
+    parser.add_argument(
+        "--simulator-timing-calibration",
+        default=None,
+        help="Calibration JSON (scale/overhead_ms per phase) for 'aic'.")
+    parser.add_argument(
+        "--simulator-step-log",
+        default=None,
+        help=("Write one CSV row per engine step (batch shape, modelled ms, "
+              "measured wall ms in GPU mode)."))
     parser.add_argument(
         "--simulator_wa_fit_interval",
         type=int,

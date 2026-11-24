@@ -19,7 +19,10 @@ from vllm.outputs import RequestOutput
 from vllm.simulator.config import GLOBAL_SIMULATOR_CONFIG
 from vllm.simulator.data_parser import read_simulator_data
 from vllm.simulator.global_output_simulator import get_global_output_simulator
+from vllm.simulator.latency_metrics import LatencyRecorder, StepLog
 from vllm.simulator.opt_utils import create_block_future_use_map
+from vllm.simulator.step_timing import (AicStepTiming, Calibration,
+                                        StepBatch)
 from vllm.simulator.timer_utils import GLOBAL_TIMER
 from vllm.simulator.utils import (generate_poisson_requests,
                                   plot_block_hit_cdf, plot_hit_rates,
@@ -135,6 +138,20 @@ def deterministic_request_id(session_id: str, turn_id: int) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{session_id}::turn_{turn_id}"))
 
 
+def build_step_timing(args):
+    """``--simulator-timing aic`` -> AicStepTiming; ``legacy`` -> None."""
+    if getattr(args, "simulator_timing", "legacy") != "aic":
+        return None
+    # In GPU mode the model only fills steps.csv's model_ms column (for
+    # step-level comparison); the clock stays real.
+    return AicStepTiming(
+        model_path=args.simulator_aic_model or args.model,
+        system=args.simulator_aic_system,
+        backend_version=args.simulator_aic_backend_version,
+        calibration=Calibration.load(args.simulator_timing_calibration),
+    )
+
+
 class Simulator:
 
     def __init__(self, engine, args):
@@ -168,6 +185,14 @@ class Simulator:
             self.start_time = 0
         else:
             self.start_time = time.time()
+        # Latency metrics and the optional per-step GPU timing model. Set up
+        # before init_heap() so first-turn arrivals are recorded.
+        self.latency = LatencyRecorder()
+        self.step_timing = build_step_timing(args)
+        if self.step_timing is not None:
+            print(f"[Simulator] Step timing: {self.step_timing.describe()}")
+        step_log_path = getattr(args, "simulator_step_log", None)
+        self.step_log = StepLog(step_log_path) if step_log_path else None
         self._init_session_rngs()
         self.init_heap()
         if GLOBAL_SIMULATOR_CONFIG.disable_simulation:
@@ -268,47 +293,28 @@ class Simulator:
             self._check_future_requests()
             # Step 2: if there are unfinished requests, step the engine
             if self.engine.has_unfinished_requests():
+                wall_start = time.perf_counter()
                 request_outputs = self.engine.step()
+                measured_ms = (time.perf_counter() - wall_start) * 1000.0
+                batch = StepBatch.from_metadata(
+                    getattr(self.engine, "last_scheduled_metadata", []),
+                    self.args.block_size)
+                model_ms = (self.step_timing.step_ms(batch)
+                            if self.step_timing is not None else None)
                 # Advance virtual clock by Δt for this step
                 if GLOBAL_SIMULATOR_CONFIG.simulator_enable_virtual_time:
-                    if len(request_outputs) != 0 and isinstance(
-                            request_outputs[0], RequestOutput):
-                        batch_size = len(request_outputs)
-
-                        is_prefill = len(
-                            request_outputs[0].outputs[0].token_ids) == 1
-                        if is_prefill:
-                            phase = "prefill"
-                            ttft_expr = self.args.simulator_ttft
-                            if isinstance(ttft_expr, (int, float)):
-                                delta_t = ttft_expr
-                            elif isinstance(ttft_expr, str):
-                                max_len = max(
-                                    len(output.prompt_token_ids)
-                                    for output in request_outputs)
-                                delta_t = eval(
-                                    ttft_expr, {
-                                        "batch_size": batch_size,
-                                        "max_len": max_len,
-                                        "math": math
-                                    })
-                                logger.debug(
-                                    f"[Simulator] Prefill batch size: {batch_size}, max len: {max_len}, delta_t: {delta_t}"
-                                )
-                            else:
-                                raise ValueError(
-                                    f"Unexpected simulator_ttft type: {type(ttft_expr)}"
-                                )
-                        else:
-                            delta_t = self.args.simulator_tpot
-                            phase = "decode"
-                            logger.debug(
-                                f"[Simulator] Decode batch size: {batch_size}, delta_t: {delta_t}"
-                            )
-                        GLOBAL_TIMER.advance(delta_t)
-                        logger.debug(
-                            f"[Simulator] Advanced time by {delta_t:.2f}s for {phase} step. New time: {self.get_time():.2f}s"
-                        )
+                    if model_ms is not None:
+                        GLOBAL_TIMER.advance(model_ms / 1000.0)
+                    else:
+                        self._advance_legacy_timing(request_outputs)
+                self.latency.on_step(request_outputs,
+                                     self.get_time() - self.start_time)
+                if self.step_log is not None:
+                    # Wall time of a simulated step is CPU time, not GPU time.
+                    self.step_log.write(
+                        self.get_time() - self.start_time, batch, model_ms,
+                        None if GLOBAL_SIMULATOR_CONFIG.
+                        simulator_enable_virtual_time else measured_ms)
                 # For each output, if finished, schedule next turn (if any)
                 for output in request_outputs:
                     if isinstance(output, RequestOutput):
@@ -339,11 +345,50 @@ class Simulator:
                     if wait_time > 0:
                         time.sleep(wait_time)
 
+    def _advance_legacy_timing(self, request_outputs):
+        """Original UniCache step-time formula (--simulator-ttft/-tpot)."""
+        if len(request_outputs) != 0 and isinstance(request_outputs[0],
+                                                    RequestOutput):
+            batch_size = len(request_outputs)
+
+            is_prefill = len(request_outputs[0].outputs[0].token_ids) == 1
+            if is_prefill:
+                phase = "prefill"
+                ttft_expr = self.args.simulator_ttft
+                if isinstance(ttft_expr, (int, float)):
+                    delta_t = ttft_expr
+                elif isinstance(ttft_expr, str):
+                    max_len = max(
+                        len(output.prompt_token_ids)
+                        for output in request_outputs)
+                    delta_t = eval(ttft_expr, {
+                        "batch_size": batch_size,
+                        "max_len": max_len,
+                        "math": math
+                    })
+                    logger.debug(
+                        f"[Simulator] Prefill batch size: {batch_size}, max len: {max_len}, delta_t: {delta_t}"
+                    )
+                else:
+                    raise ValueError(
+                        f"Unexpected simulator_ttft type: {type(ttft_expr)}")
+            else:
+                delta_t = self.args.simulator_tpot
+                phase = "decode"
+                logger.debug(
+                    f"[Simulator] Decode batch size: {batch_size}, delta_t: {delta_t}"
+                )
+            GLOBAL_TIMER.advance(delta_t)
+            logger.debug(
+                f"[Simulator] Advanced time by {delta_t:.2f}s for {phase} step. New time: {self.get_time():.2f}s"
+            )
+
     def _check_future_requests(self):
         released = 0
         while self.simulation_future_requests and self.simulation_future_requests[
                 0][0] <= self.get_time():
             ts, _, req = heapq.heappop(self.simulation_future_requests)
+            self.latency.on_arrival(req.request_id, ts - self.start_time)
             # Add to engine
             self.engine.add_request(
                 request_id=req.request_id,
@@ -535,6 +580,16 @@ class Simulator:
             ttft_values = np.array(list(self.collected_ttft.values()),
                                    dtype=np.float64)
             summary["avg_ttft"] = float(np.mean(ttft_values))
+
+        latency = self.latency.write(output_dir)
+        if self.step_log is not None:
+            self.step_log.close()
+        if latency.get("ttft_s"):
+            print(f"[Latency] TTFT mean {latency['ttft_s']['mean']*1e3:.1f} ms "
+                  f"p90 {latency['ttft_s']['p90']*1e3:.1f} ms | ITL mean "
+                  f"{(latency['itl_s'] or {}).get('mean', 0)*1e3:.2f} ms | "
+                  f"E2E mean {latency['e2e_s']['mean']:.3f} s "
+                  f"({latency['completed_requests']} requests)")
 
         summary_path = os.path.join(output_dir, "summary.json")
         with open(summary_path, "w", encoding="utf-8") as f:

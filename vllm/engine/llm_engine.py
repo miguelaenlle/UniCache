@@ -1497,6 +1497,11 @@ class LLMEngine:
         assert seq_group_metadata_list is not None
         assert scheduler_outputs is not None
 
+        # [simulator] The batch this step executes; read by the simulator's
+        # step-timing model (vllm/simulator/step_timing.py).
+        self.last_scheduled_metadata = (
+            [] if scheduler_outputs.is_empty() else seq_group_metadata_list)
+
         if not scheduler_outputs.is_empty():
 
             # Check if we have a cached last_output from the previous iteration.
