@@ -3,8 +3,8 @@
 
 Expects ``<sweep>/<config>/scale-<s>/[agent/]results.csv``. Writes
 ``<sweep>/sweep.csv`` (one row per config x load x policy) and
-``<sweep>/ttft_vs_load.png`` (TTFT mean and p90 vs offered load, one panel
-per config, one line per policy).
+``<sweep>/ttft_vs_load.png`` (mean TTFT, absolute and relative to LRU, vs
+offered load; one column per config, one line per policy).
 
     .venv-sim312/bin/python scripts/aic_timing/summarize_sweep.py \\
       result/aic-timing/codeparrot-32768-load-sweep
@@ -66,29 +66,34 @@ def main():
     fig, axes = plt.subplots(2, len(configs), figsize=(5.2 * len(configs), 7),
                              squeeze=False)
     for col, config in enumerate(configs):
-        for row_i, (metric, title) in enumerate([("ttft_mean_ms", "TTFT mean"),
-                                                 ("ttft_p90_ms", "TTFT p90")]):
+        lru = {r["load_x"]: r["ttft_mean_ms"] for r in rows
+               if r["config"] == config and r["policy"] == "LRU"}
+        for row_i in range(2):
             ax = axes[row_i][col]
             for name, color, marker in POLICIES:
-                pts = sorted((r["load_x"], r[metric]) for r in rows
+                pts = sorted((r["load_x"], r["ttft_mean_ms"]) for r in rows
                              if r["config"] == config and r["policy"] == name)
+                if row_i == 1:  # relative to LRU at the same load
+                    pts = [(x, y / lru[x]) for x, y in pts if x in lru]
                 if not pts:
                     continue
                 xs, ys = zip(*pts)
                 ax.plot(xs, ys, color=color, marker=marker, markersize=8,
                         linewidth=2, label=name)
-                ax.annotate(name, (xs[-1], ys[-1]), xytext=(6, 0),
-                            textcoords="offset points", va="center",
-                            fontsize=9, color="#3d3d3a")
             ax.set_xscale("log")
-            ax.set_yscale("log")
-            ax.set_title(f"{config}: {title}", fontsize=11, loc="left")
+            if row_i == 0:
+                ax.set_yscale("log")
+                ax.set_title(f"{config}: mean TTFT", fontsize=11, loc="left")
+                ax.set_ylabel("ms")
+            else:
+                ax.set_title(f"{config}: mean TTFT relative to LRU",
+                             fontsize=11, loc="left")
+                ax.set_ylabel("x LRU (lower is better)")
             ax.set_xlabel("Offered load (x recorded arrival rate)")
-            ax.set_ylabel("ms")
             ax.grid(True, which="major", color="#e4e3dd", linewidth=0.8)
             for side in ["top", "right"]:
                 ax.spines[side].set_visible(False)
-            if row_i == 0 and col == 0:
+            if col == 0 and row_i == 0:
                 ax.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     fig.savefig(sweep / "ttft_vs_load.png", dpi=150)
