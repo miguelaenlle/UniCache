@@ -107,6 +107,27 @@ def simulate(policy, task_config, run_dir: Path, args, use_map=None):
     return sorted(run_dir.glob("*/summary.json"))[-1].parent
 
 
+def spearman(a, b) -> float:
+    """Rank correlation; ties get their average rank."""
+    def ranks(xs):
+        order = sorted(range(len(xs)), key=lambda i: xs[i])
+        r = [0.0] * len(xs)
+        i = 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
+                j += 1
+            for k in range(i, j + 1):
+                r[order[k]] = (i + j) / 2
+            i = j + 1
+        return r
+    ra, rb = ranks(a), ranks(b)
+    ma, mb = sum(ra) / len(ra), sum(rb) / len(rb)
+    cov = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+    var = (sum((x - ma)**2 for x in ra) * sum((y - mb)**2 for y in rb)) ** 0.5
+    return cov / var if var else float("nan")
+
+
 def latest_result(run_dir: Path) -> Path:
     return sorted(run_dir.glob("*/summary.json"))[-1].parent
 
@@ -183,6 +204,18 @@ def main():
             lines.append(f"| {label} | {r['policy']} | {r['paper_qttft_s']:.2f} | "
                          f"{r['sim_qttft_s']:.3f} | {r['sim_qttft_s'] / lru['sim_qttft_s']:.2f} | "
                          f"{r['paper_qttft_s'] / lru['paper_qttft_s']:.2f} | {r['sim_hit_rate']:.4f} |")
+    lines += ["", "| Trace | Spearman rho (sim vs paper QTTFT) | Same side of LRU |",
+              "|---|---:|---:|"]
+    for label in args.traces:
+        group = [r for r in rows if r["trace"] == label]
+        sim = [r["sim_qttft_s"] for r in group]
+        paper = [r["paper_qttft_s"] for r in group]
+        lru_s, lru_p = sim[0], paper[0]  # LRU is first in POLICIES
+        if max(sim) - min(sim) < 1e-9:
+            lines.append(f"| {label} | n/a (all policies equal) | n/a |")
+            continue
+        same = sum((s < lru_s) == (q < lru_p) for s, q in zip(sim[1:], paper[1:]))
+        lines.append(f"| {label} | {spearman(sim, paper):.2f} | {same}/{len(sim) - 1} |")
     (out / "table5.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 

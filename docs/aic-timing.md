@@ -166,6 +166,93 @@ Reading:
 * These use uncalibrated tables; tomorrow's GPU calibration changes the
   absolute numbers, and possibly where saturation sits.
 
+## Reproducing UniCache paper Table 5 (QTTFT), 2026-11-24
+
+Paper: one A100, Llama-3.2-3B, KV budget 0.9A, three ~1-hour mixed traces,
+eight policies. QTTFT = arrival to first token, including queueing (our
+`ttft_s`). The paper measured QTTFT **on real GPUs**; here it is simulated.
+
+How we rebuilt the setup (`scripts/paper_qttft/`):
+* Traces: `TaskData/Hybrid/test1`, `test2`, `test3`. Their multi-turn request
+  shares (≈80%, ≈50%, ≈20%) match Trace #1, #2 and #3. **ToolBench is
+  missing locally and was dropped** (one of four single-turn tasks).
+* ALFRED's "scale_5000" sessions were re-tokenized
+  (`prepare_alfred_scale.py`, first 600 sessions). The scale-up inserts
+  random UUIDs, so the content matches the paper statistically, not
+  byte-for-byte.
+* Budget: 0.9 × 63 GiB (paper Table 4, A100 KV for 3B) = 66,355 blocks of 8
+  tokens.
+* Timing: `aic` with **uncalibrated** `a100_sxm` tables for Llama-3.2-3B.
+  Comparison: `legacy`, the paper simulator's own power-law formula.
+* OPT: made self-consistent with `refine_opt.py` (see below).
+
+Result (`result/paper-qttft/aic-a100/table5.md`), QTTFT relative to LRU in
+the same trace:
+
+| | LRU | LFU | FIFO | LeCaR | ARC | WA | OPT | UniCache |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| T#1 paper | 1.00 | 1.71 | 1.39 | 1.50 | 0.92 | 1.04 | 0.78 | 0.78 |
+| T#1 sim | 1.00 | 1.13 | 1.04 | **0.64** | 1.00 | 1.15 | 0.14* | 0.86 |
+| T#2 paper | 1.00 | 1.89 | 1.29 | 1.68 | 0.93 | 1.04 | 0.75 | 0.86 |
+| T#2 sim | 1.00 | 3.44 | 1.18 | 1.38 | 1.00 | 1.09 | 0.81 | 0.91 |
+| T#3 paper | 1.00 | 2.85 | 1.92 | 2.69 | 0.92 | 2.08 | 0.62 | 0.77 |
+| T#3 sim | 1.00 | 1.05 | 1.02 | 1.01 | 1.00 | 1.01 | 0.78 | 0.87 |
+
+Rank agreement with the paper (Spearman ρ over 8 policies; policies on the
+same side of LRU): T#1 0.52, 5/7; T#2 **1.00, 7/7**; T#3 **0.93, 7/7**.
+
+Absolute LRU QTTFT: paper 4.94 / 0.28 / 0.13 s; sim 10.7 / 0.018 / 0.018 s.
+
+\* T#1 OPT: hit ratio converged (0.669) but QTTFT was still falling across
+iterations (2.96 → 2.24 → 1.49 s). Treat it as not converged.
+
+What this shows:
+1. **The paper's own simulator timing cannot produce Table 5.** With `legacy`
+   timing every policy gets identical QTTFT in every trace (for example 33.64 s
+   for all eight on T#1), because prefill is charged by full prompt length.
+   Hit ratios still differ, with OPT on top as expected. The paper's latency
+   numbers had to come from GPUs, which matches its text.
+2. **With cache-aware A100 timing, the policy ordering is reproduced on T#2
+   and T#3,** with UniCache best online and LFU worst, as in the paper.
+   Magnitudes are compressed on T#3 because our run barely queues: about 18 ms
+   QTTFT, mostly prefill. The paper's 2–3x gaps come from queueing
+   amplification.
+3. **Load does not match in either direction.** T#1 is about 2x more
+   congested than the paper's, while T#2 and T#3 are about 10x less. A single
+   arrival scale cannot fix both. The likely cause is per-step CPU overhead
+   that the uncalibrated kernel tables omit. That overhead hurts the many
+   short single-turn requests of T#2/T#3 most, and it is what tomorrow's
+   `overhead_ms` calibration measures. The missing ToolBench load and the
+   random ALFRED scale-up also contribute.
+4. **T#1 deviations.** LeCaR is the best online policy here (hit 0.627 vs
+   UniCache 0.552) but poor in the paper. Under legacy timing LeCaR also beats
+   UniCache on T#1 hit ratio (0.486 vs 0.427), so this is about the trace or
+   the implementation, not the timing model. Worth checking the ALFRED variant
+   and LeCaR's parameters.
+
+**OPT under cache-aware timing (methodology).** OPT's future-use map is
+indexed by prefill iteration and profiled from a no-cache run. With legacy
+timing every policy has the same step times, so the order matches. With
+`aic`, hits shorten steps, which changes batching and follow-up arrival times,
+and the map goes stale: T#1 "OPT" scored 0.395, below LRU's 0.510.
+`refine_opt.py` re-runs OPT on the map from its own previous run until the
+hit ratio converges. T#2 0.805 → 0.869 and T#3 0.677 → 0.679 converge in two
+steps; T#1 needed eight (0.395 → 0.669). Any future OPT headroom number
+under `aic` timing should use the refined OPT.
+
+Reproduce:
+
+```bash
+.venv-sim312/bin/python scripts/paper_qttft/prepare_alfred_scale.py
+.venv-sim312/bin/python scripts/paper_qttft/run_table5.py --out result/paper-qttft/aic-a100 --timing aic --jobs 3
+for t in 1 2 3; do .venv-sim312/bin/python scripts/paper_qttft/refine_opt.py \
+  --opt-dir "result/paper-qttft/aic-a100/Trace#$t/OPT" --iterations 8; done
+.venv-sim312/bin/python scripts/paper_qttft/run_table5.py --out result/paper-qttft/aic-a100 --table-only
+```
+
+Resource note: a Trace #1 replay holds about 3 GB of RAM; use `--jobs 3` on
+a 48 GB laptop that is running other work.
+
 ## Known limitations
 
 * The calibration is linear per phase. Batches mixing prefill and decode don't
