@@ -16,29 +16,29 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import SUBSETS, WORKLOADS  # noqa: E402
+from common import SUBSETS, WORKLOADS, spec  # noqa: E402
 
 
 def build(name: str) -> dict:
-    spec = WORKLOADS[name]
-    cfg = yaml.safe_load(spec["split"].with_suffix(".yaml").read_text())
+    spec_ = spec(name)
+    cfg = yaml.safe_load(spec_["split"].with_suffix(".yaml").read_text())
     assert len(cfg["tasks"]) == 1
     task = cfg["tasks"][0]
     arrivals = task["frozen_arrivals"]
-    keep = sorted(arrivals, key=lambda s: (arrivals[s], s))[: spec["sessions"]]
+    keep = sorted(arrivals, key=lambda s: (arrivals[s], s))[: spec_["sessions"]]
     keep_set = set(keep)
 
     out = SUBSETS / name
     out.mkdir(parents=True, exist_ok=True)
     turns = requests = prompt_tokens = 0
-    with open(spec["split"].with_suffix(".jsonl")) as src, \
+    with open(spec_["split"].with_suffix(".jsonl")) as src, \
             open(out / "eval.jsonl", "w") as dst:
         for line in src:
             record = json.loads(line)
             (sid, session), = record.items()
             if sid not in keep_set:
                 continue
-            k = spec["max_turns"]
+            k = spec_["max_turns"]
             if k is not None and session["num_turns"] > k:
                 for t in range(k + 1, session["num_turns"] + 1):
                     session.pop(f"turn_{t}")
@@ -58,10 +58,12 @@ def build(name: str) -> dict:
 
 def main():
     names = sys.argv[1:] or list(WORKLOADS)
-    rows = [build(n) for n in names]
-    for r in rows:
-        print(r)
-    (SUBSETS / "subsets.json").write_text(json.dumps(rows, indent=2))
+    index = SUBSETS / "subsets.json"
+    known = {r["workload"]: r for r in json.loads(index.read_text())} if index.exists() else {}
+    for n in names:
+        known[n] = build(n)
+        print(known[n])
+    index.write_text(json.dumps(list(known.values()), indent=2))
 
 
 if __name__ == "__main__":

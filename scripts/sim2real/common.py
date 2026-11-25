@@ -39,6 +39,19 @@ WORKLOADS = {
 }
 
 
+def spec(name: str) -> dict:
+    """Subset spec. A variant "<workload>@<sessions>[x<max_turns>]" overrides sizes,
+    e.g. "codeparrot@600" or "sharegpt@100x2"; it shares the base workload's agent."""
+    base, _, size = name.partition("@")
+    s = dict(WORKLOADS[base], base=base)
+    if size:
+        n, _, k = size.partition("x")
+        s["sessions"] = int(n)
+        if k:
+            s["max_turns"] = int(k)
+    return s
+
+
 def baseline_command(workload: str) -> Path:
     """An H1 LRU eval command for this workload; every run is derived from it."""
     return STUDY / f"baseline-replays/16384/{workload}/LRU/eval/command.json"
@@ -47,7 +60,8 @@ def baseline_command(workload: str) -> Path:
 def agent_policy(workload: str) -> Path:
     """The selected submission's policy.py for the workload's best agent."""
     import json
-    rec = json.loads((STUDY / f"agent-runs/{WORKLOADS[workload]['agent_blocks']}/{workload}.json").read_text())
+    s = spec(workload)
+    rec = json.loads((STUDY / f"agent-runs/{s['agent_blocks']}/{s['base']}.json").read_text())
     run = AGENT_RUNS / Path(rec["run"]).name
     return run / "internal" / f"submission-{int(rec['selected']):04d}" / "policy.py"
 

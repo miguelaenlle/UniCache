@@ -48,7 +48,7 @@ def main():
     by = {(r["workload"], int(r["blocks"]), r["policy"]): r for r in rows}
     subsets = {s["workload"]: s for s in json.loads((SUBSETS / "subsets.json").read_text())}
     table, prereg = [], {}
-    for w in WORKLOADS:
+    for w in sorted({r["workload"] for r in rows}):
         need = 2 * largest_request_blocks(w)
         cands = []
         for b in sorted({k[1] for k in by if k[0] == w}):
@@ -87,8 +87,9 @@ def main():
             "sim_hit_pct": {p: round(v, 3) for p, v in hits.items()},
             "best_heuristic_tier1": best_heur,
             "predicted_delta_vs_lru_pp": {p: round(hits[p] - hits["LRU"], 3)
-                                          for p in ["UniCache", "LeCaR", "Agent"]},
-            "predicted_agent_minus_best_pp": round(hits["Agent"] - hits[best_heur], 3),
+                                          for p in ["UniCache", "LeCaR", "Agent"] if p in hits},
+            "predicted_agent_minus_best_pp": (round(hits["Agent"] - hits[best_heur], 3)
+                                              if "Agent" in hits else None),
         }
 
     with open(sweep / "capacity_selection.csv", "w", newline="") as f:
@@ -110,8 +111,9 @@ def main():
         h, d = p["sim_hit_pct"], p["predicted_delta_vs_lru_pp"]
         lines.append(f"| {w} | {p['subset']['sessions']} | {p['subset']['requests']} | {p['blocks']} | "
                      f"{p['selection']['opt_minus_lru_pp']:.2f} | {h['LRU']:.2f} | {h['UniCache']:.2f} | "
-                     f"{h['LeCaR']:.2f} | {h['Agent']:.2f} | {h['OPT']:.2f} | {d['Agent']:+.2f} | "
-                     f"{p['predicted_agent_minus_best_pp']:+.2f} | {p['best_heuristic_tier1']} |")
+                     f"{h['LeCaR']:.2f} | {h.get('Agent', float('nan')):.2f} | {h['OPT']:.2f} | "
+                     f"{d.get('Agent', float('nan')):+.2f} | "
+                     f"{(p['predicted_agent_minus_best_pp'] or float('nan')):+.2f} | {p['best_heuristic_tier1']} |")
     (out / "preregistration.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 

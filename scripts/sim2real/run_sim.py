@@ -76,13 +76,18 @@ def run(workload, blocks, policy, out, use_map=None, mode="sim", rep=0):
 
 
 def write_rows(rows, out):
+    # Merge with earlier invocations on the same --out (newest row wins).
+    key = lambda r: (r["workload"], str(r["blocks"]), r["policy"], str(r.get("rep", 0)))
+    old = {key(r): r for r in csv.DictReader(open(out / "runs.csv"))} if (out / "runs.csv").exists() else {}
+    old.update({key(r): r for r in rows})
+    rows = list(old.values())
     fields = sorted({k for r in rows for k in r}, key=lambda k: (k not in
                     ["workload", "blocks", "policy", "rep", "status", "hit_rate"], k))
     with open(out / "runs.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
-        w.writerows(sorted(rows, key=lambda r: (r["workload"], r["blocks"], r["policy"],
-                                               r.get("rep", 0))))
+        w.writerows(sorted(rows, key=lambda r: (r["workload"], int(r["blocks"]), r["policy"],
+                                               int(r.get("rep") or 0))))
     print(f"Wrote {out / 'runs.csv'}")
 
 
