@@ -1,7 +1,9 @@
 # GH200 calibration and sim2real transfer plan (DeltaAI)
 
-Status: plan, 2026-11-25. Revised after an advisor review (a Fable agent read
-the plan against the code). Nothing has run on DeltaAI yet.
+Status: plan, 2026-11-25. **Phase C, after sim2real:** the sim-to-real transfer test now
+runs first, per `docs/sim2real-transfer-methodology.md`. The second advisor
+review (`docs/reviews/gh200-plan-advisor-review.md`) is not yet folded in
+here; fold it in before Phase C starts. Nothing has run on DeltaAI yet.
 
 ## Goals
 
