@@ -17,3 +17,16 @@ class VirtualTimer:
 
 
 GLOBAL_TIMER = VirtualTimer()
+
+
+def engine_time():
+    """The clock the vLLM core uses: virtual time in simulation, wall time on GPU.
+
+    Policy code must read time through this, so a policy sees the same clock as
+    the block timestamps (``last_accessed``) the core hands it.
+    """
+    from vllm.simulator.config import GLOBAL_SIMULATOR_CONFIG
+    if GLOBAL_SIMULATOR_CONFIG.simulator_enable_virtual_time:
+        return GLOBAL_TIMER.get_current_time()
+    import time
+    return time.time()

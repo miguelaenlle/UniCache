@@ -47,10 +47,10 @@ def emit(kind, cache_id=None, **fields):
     if not enabled():
         return
     global _ordinal
-    from vllm.simulator.timer_utils import GLOBAL_TIMER
+    from vllm.simulator.timer_utils import engine_time
     _ordinal += 1
     event = {'kind': kind, 'event_id': _ordinal,
-             'time': GLOBAL_TIMER.get_current_time(), **fields}
+             'time': engine_time(), **fields}
     if cache_id is not None:
         event['cache_id'] = cache_id
     for observer in tuple(_observers):

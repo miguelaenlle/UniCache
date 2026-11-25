@@ -31,11 +31,50 @@ class PolicyFailure(RuntimeError):
     pass
 
 
+def network_reachable(timeout=1.0):
+    """True if this process can open an outbound TCP connection."""
+    import socket
+    for host in ('1.1.1.1', '8.8.8.8'):
+        try:
+            socket.create_connection((host, 53), timeout=timeout).close()
+            return True
+        except OSError:
+            pass
+    return False
+
+
+def sandbox_command(rules):
+    """Command prefix that runs a policy worker offline.
+
+    macOS uses Seatbelt with ``rules``. Linux has no Seatbelt, so the backend
+    is chosen with UNICACHE_POLICY_SANDBOX:
+      * ``unshare``: a private user + network namespace (no network);
+      * ``bwrap``: bubblewrap, read-only root and no network;
+      * ``outer-offline``: the whole engine already runs without network
+        (e.g. ``apptainer exec --net --network none``); checked here.
+    There is no unsandboxed fallback.
+    """
+    if Path('/usr/bin/sandbox-exec').exists():
+        return ['/usr/bin/sandbox-exec', '-p', rules]
+    mode = os.environ.get('UNICACHE_POLICY_SANDBOX', '')
+    if mode == 'unshare':
+        return ['unshare', '--user', '--map-root-user', '--net', '--']
+    if mode == 'bwrap':
+        return ['bwrap', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev',
+                '--proc', '/proc', '--tmpfs', '/tmp', '--die-with-parent', '--']
+    if mode == 'outer-offline':
+        if network_reachable():
+            raise PolicyFailure('UNICACHE_POLICY_SANDBOX=outer-offline but the network is reachable')
+        return []
+    raise PolicyFailure('No policy sandbox: on Linux set UNICACHE_POLICY_SANDBOX to '
+                        'unshare, bwrap or outer-offline')
+
+
 class Remote:
     def __init__(self, source):
         worker = Path(__file__).with_name('worker.py').resolve()
         self.process = subprocess.Popen(
-            ['/usr/bin/sandbox-exec', '-p', profile([worker, sys.base_prefix, Path(sys.executable).resolve()]),
+            [*sandbox_command(profile([worker, sys.base_prefix, Path(sys.executable).resolve()])),
              str(Path(sys.executable).resolve()), '-I', '-S', '-c', worker.read_text()],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, env={'PATH': '/usr/bin:/bin'})
@@ -96,9 +135,9 @@ class ControlledEvictor:
             self.flush(False)
 
     def flush(self, choose):
-        from vllm.simulator.timer_utils import GLOBAL_TIMER
+        from vllm.simulator.timer_utils import engine_time
         result = self.remote.call({'events': self.events, 'choose': choose,
-                                   'now': GLOBAL_TIMER.get_current_time()})
+                                   'now': engine_time()})
         self.events = []
         return result
 

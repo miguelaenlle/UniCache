@@ -9,7 +9,7 @@ import subprocess
 import sys
 import sysconfig
 
-from policy_agent.bridge import PolicyFailure, Remote, profile
+from policy_agent.bridge import PolicyFailure, Remote, profile, sandbox_command
 
 
 def numerical_runtime():
@@ -31,7 +31,7 @@ class V2Remote(Remote):
         runtime = Path(sys.executable).resolve()
         rules = profile([worker, sys.base_prefix, runtime, *packages])
         self.process = subprocess.Popen(
-            ['/usr/bin/sandbox-exec', '-p', rules, str(runtime), '-I', '-S', '-c', worker.read_text()],
+            [*sandbox_command(rules), str(runtime), '-I', '-S', '-c', worker.read_text()],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
             env={'PATH': '/usr/bin:/bin', 'OMP_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',
@@ -108,8 +108,8 @@ class IndependentEvictor:
         """Reset physical retention state without discarding online observations."""
         if self.eligible:
             raise PolicyFailure('Cannot reset policy before cached blocks are released')
-        from vllm.simulator.timer_utils import GLOBAL_TIMER
-        self.emit({'kind': 'cache_reset', 'time': GLOBAL_TIMER.get_current_time()})
+        from vllm.simulator.timer_utils import engine_time
+        self.emit({'kind': 'cache_reset', 'time': engine_time()})
         self.flush(False)
 
     def __contains__(self, block_id):
@@ -143,8 +143,8 @@ class IndependentEvictor:
     def emit(self, event):
         event = serializable(event)
         if 'time' not in event:
-            from vllm.simulator.timer_utils import GLOBAL_TIMER
-            event['time'] = GLOBAL_TIMER.get_current_time()
+            from vllm.simulator.timer_utils import engine_time
+            event['time'] = engine_time()
         self.event_id = max(self.event_id + 1, event.get('event_id', 0))
         event['event_id'] = self.event_id
         event.setdefault('cache_id', self.cache_id)
@@ -174,8 +174,8 @@ class IndependentEvictor:
 
     def flush(self, choose):
         self._start()
-        from vllm.simulator.timer_utils import GLOBAL_TIMER
-        context = {'cache_id': self.cache_id, 'now': GLOBAL_TIMER.get_current_time(),
+        from vllm.simulator.timer_utils import engine_time
+        context = {'cache_id': self.cache_id, 'now': engine_time(),
                    'decision_id': self.decision_id, 'through_event_id': self.event_id,
                    'eligible_count': len(self.eligible), 'reason': 'allocation'}
         result = self.remote.call({'events': self.events, 'choose': choose, 'context': context})

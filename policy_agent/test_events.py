@@ -31,6 +31,7 @@ class EventTransportTests(unittest.TestCase):
         events.register(cpu)
         timer = types.ModuleType('vllm.simulator.timer_utils')
         timer.GLOBAL_TIMER = types.SimpleNamespace(get_current_time=lambda: 2.5)
+        timer.engine_time = lambda: 2.5
         with patch.dict(os.environ, {'UNICACHE_POLICY_INTERFACE': 'v2'}), patch.dict(sys.modules, {'vllm.simulator.timer_utils': timer}):
             events.emit_to(gpu, 'block_allocated', block_id=42, generation=1)
             events.emit('sequence_step', block_ids=[42])
