@@ -27,6 +27,10 @@ From: nvidia/cuda:12.6.3-devel-ubuntu24.04
     # Not needed here and may lack aarch64 wheels: torchaudio, ray, xformers (x86-only).
     sed -i '/^torchaudio/d;/^ray\[/d' requirements/cuda.txt
     /opt/venv/bin/pip install --no-cache-dir -r requirements/build.txt
+    # CMake 4 rejects the old cmake_minimum_required() in fetched dependencies.
+    /opt/venv/bin/pip install --no-cache-dir "cmake<4"
+    # The source tarball has no .git, so give setuptools-scm the fork's version.
+    export SETUPTOOLS_SCM_PRETEND_VERSION=0.1.dev22
     export TORCH_CUDA_ARCH_LIST="9.0" VLLM_TARGET_DEVICE=cuda MAX_JOBS=${MAX_JOBS:-16}
     /opt/venv/bin/pip install --no-cache-dir --no-build-isolation -e .
     /opt/venv/bin/pip install --no-cache-dir pyyaml
