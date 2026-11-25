@@ -2,7 +2,8 @@
 
 Status, 2026-11-25: **simulator side done; GPU side not run yet.** GPU
 columns show "—" until the GH200 runs finish. The simulator numbers below were
-committed before any GPU run (`result/sim2real-transfer/preregistration/`).
+committed before any GPU run (`result/sim2real-transfer/preregistration-b16/`).
+**First GPU job: ALFRED only**; CodeParrot and ShareGPT follow if it works.
 Full methodology: [sim2real-transfer-methodology.md](sim2real-transfer-methodology.md).
 
 ## 1. Question
@@ -49,13 +50,16 @@ most OPT − LRU headroom, subject to:
 * no preemptions.
 
 The engine enforces the block budget, so the GPU cache is exactly this size.
-A block is 8 tokens, or 256 KiB for Llama-3.2-1B.
+A block is **16 tokens** (512 KiB for Llama-3.2-1B) on both sides. H1 used 8,
+but this fork runs 8-token blocks on CUDA only through xformers, which is
+x86-only and does not run on the GH200's Arm host. The chosen capacities in
+tokens are the same as at 8-token blocks.
 
 | Trace | Cache size | OPT − LRU (sim) | Evictions (sim, LRU) | Evicted, then requested again | Preemptions |
 |---|---:|---:|---:|---:|---:|
-| ALFRED | 1,024 blocks (256 MiB, 8k tokens) | 26.5 pp | 38,631 | 30,898 | 0 |
-| CodeParrot | 8,192 blocks (2 GiB, 66k tokens) | 15.3 pp | 37,500 | 5,942 | 0 |
-| ShareGPT | 2,048 blocks (512 MiB, 16k tokens) | 30.9 pp | 9,559 | 2,293 | 0 |
+| ALFRED | 512 blocks (256 MiB, 8k tokens) | 26.3 pp | 19,158 | 15,304 | 0 |
+| CodeParrot | 4,096 blocks (2 GiB, 64k tokens) | 15.1 pp | 18,611 | 2,943 | 0 |
+| ShareGPT | 1,024 blocks (512 MiB, 16k tokens) | 30.9 pp | 4,790 | 1,152 | 0 |
 
 **Policies.**
 * LRU, run 3 times on the GPU (the repeats measure GPU noise);
@@ -75,7 +79,7 @@ OPT runs only in the simulator, as the upper bound.
 | Timing | H1's formula: prefill power law, 10 ms per decode step | real GPU execution |
 | Hardware | laptop | 1× NVIDIA GH200 (96 GB HBM3), NCSA DeltaAI |
 | Model | Llama-3.2-1B-Instruct, outputs forced to the trace's recorded tokens (dummy weights on GPU) | same |
-| Settings | block size 8, ≤ 32 sequences, chunked prefill off, prefix caching on, 0 CPU swap blocks | same |
+| Settings | block size 16, ≤ 32 sequences, chunked prefill off, prefix caching on, 0 CPU swap blocks | same |
 
 **Metric.** Token-weighted hit ratio = cached prompt tokens ÷ all prompt
 tokens. A policy's result **transfers** if its gap to LRU has the same sign on
@@ -87,38 +91,38 @@ sim and GPU, and the two gaps differ by ≤ max(0.5 pp, 2 × GPU LRU noise).
 
 | Trace | Policy | Simulator | GPU | GPU − Sim |
 |---|---|---:|---:|---:|
-| ALFRED | LRU | 33.54 | — | — |
-| | UniCache | 33.54 | — | — |
-| | LeCaR | 35.45 | — | — |
-| | Agent | 36.15 | — | — |
-| | OPT (sim only) | 60.02 | n/a | n/a |
-| CodeParrot | LRU | 16.14 | — | — |
-| | UniCache | 18.93 | — | — |
-| | LeCaR | 17.76 | — | — |
-| | Agent | 18.55 | — | — |
-| | OPT (sim only) | 31.42 | n/a | n/a |
-| ShareGPT | LRU | 13.09 | — | — |
-| | UniCache | 13.09 | — | — |
-| | LeCaR | 17.93 | — | — |
-| | Agent | 16.23 | — | — |
-| | OPT (sim only) | 43.97 | n/a | n/a |
+| ALFRED | LRU | 33.45 | — | — |
+|  | UniCache | 33.45 | — | — |
+|  | LeCaR | 35.34 | — | — |
+|  | Agent | 35.25 | — | — |
+|  | OPT (sim only) | 59.72 | n/a | n/a |
+| CodeParrot | LRU | 16.05 | — | — |
+|  | UniCache | 18.89 | — | — |
+|  | LeCaR | 18.19 | — | — |
+|  | Agent | 18.54 | — | — |
+|  | OPT (sim only) | 31.18 | n/a | n/a |
+| ShareGPT | LRU | 11.66 | — | — |
+|  | UniCache | 11.66 | — | — |
+|  | LeCaR | 16.89 | — | — |
+|  | Agent | 14.31 | — | — |
+|  | OPT (sim only) | 42.55 | n/a | n/a |
 
 ### Gap vs LRU (pp): does the decision transfer?
 
 | Trace | Comparison | Simulator | GPU | Transfers? |
 |---|---|---:|---:|---|
 | ALFRED | UniCache − LRU | 0.00 | — | — |
-| | LeCaR − LRU | +1.91 | — | — |
-| | Agent − LRU | +2.61 | — | — |
-| | Agent − best heuristic (LeCaR) | +0.70 | — | — |
-| CodeParrot | UniCache − LRU | +2.79 | — | — |
-| | LeCaR − LRU | +1.62 | — | — |
-| | Agent − LRU | +2.41 | — | — |
-| | Agent − best heuristic (UniCache) | −0.38 | — | — |
+|  | LeCaR − LRU | +1.89 | — | — |
+|  | Agent − LRU | +1.80 | — | — |
+|  | Agent − best heuristic (LeCaR) | −0.09 | — | — |
+| CodeParrot | UniCache − LRU | +2.83 | — | — |
+|  | LeCaR − LRU | +2.13 | — | — |
+|  | Agent − LRU | +2.48 | — | — |
+|  | Agent − best heuristic (UniCache) | −0.35 | — | — |
 | ShareGPT | UniCache − LRU | 0.00 | — | — |
-| | LeCaR − LRU | +4.84 | — | — |
-| | Agent − LRU | +3.13 | — | — |
-| | Agent − best heuristic (LeCaR) | −1.71 | — | — |
+|  | LeCaR − LRU | +5.24 | — | — |
+|  | Agent − LRU | +2.65 | — | — |
+|  | Agent − best heuristic (LeCaR) | −2.59 | — | — |
 
 GPU noise (spread of the 3 LRU runs): ALFRED —, CodeParrot —, ShareGPT —.
 

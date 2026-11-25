@@ -1,0 +1,141 @@
+{
+  "alfred": {
+    "blocks": 512,
+    "block_size": 16,
+    "gib": 0.25,
+    "subset": {
+      "workload": "alfred",
+      "sessions": 60,
+      "requests": 713,
+      "prompt_tokens": 461282,
+      "arrival_span_s": 55.4
+    },
+    "selection": {
+      "workload": "alfred",
+      "blocks": 512,
+      "opt_minus_lru_pp": 26.26,
+      "heuristic_spread_pp": 10.41,
+      "lru_evictions": 19158,
+      "lru_evicted_then_missed": 15304,
+      "lru_preemptions": 0,
+      "replay_s": 322,
+      "min_blocks": 244,
+      "ok_headroom": true,
+      "ok_evictions": true,
+      "ok_spread": true,
+      "ok_no_thrash": true,
+      "ok_replay": true,
+      "qualifies": true
+    },
+    "sim_hit_pct": {
+      "LRU": 33.451,
+      "UniCache": 33.451,
+      "LeCaR": 35.342,
+      "Agent": 35.251,
+      "OPT": 59.715,
+      "LFU": 24.936,
+      "FIFO": 33.593
+    },
+    "best_heuristic_tier1": "LeCaR",
+    "predicted_delta_vs_lru_pp": {
+      "UniCache": 0.0,
+      "LeCaR": 1.89,
+      "Agent": 1.8
+    },
+    "predicted_agent_minus_best_pp": -0.09
+  },
+  "codeparrot@600": {
+    "blocks": 4096,
+    "block_size": 16,
+    "gib": 2.0,
+    "subset": {
+      "workload": "codeparrot@600",
+      "sessions": 600,
+      "requests": 600,
+      "prompt_tokens": 311189,
+      "arrival_span_s": 575.8
+    },
+    "selection": {
+      "workload": "codeparrot@600",
+      "blocks": 4096,
+      "opt_minus_lru_pp": 15.13,
+      "heuristic_spread_pp": 3.15,
+      "lru_evictions": 18611,
+      "lru_evicted_then_missed": 2943,
+      "lru_preemptions": 0,
+      "replay_s": 577,
+      "min_blocks": 352,
+      "ok_headroom": true,
+      "ok_evictions": true,
+      "ok_spread": true,
+      "ok_no_thrash": true,
+      "ok_replay": true,
+      "qualifies": true
+    },
+    "sim_hit_pct": {
+      "LRU": 16.052,
+      "UniCache": 18.885,
+      "LeCaR": 18.186,
+      "Agent": 18.535,
+      "OPT": 31.184,
+      "LFU": 18.648,
+      "FIFO": 15.738
+    },
+    "best_heuristic_tier1": "UniCache",
+    "predicted_delta_vs_lru_pp": {
+      "UniCache": 2.833,
+      "LeCaR": 2.134,
+      "Agent": 2.483
+    },
+    "predicted_agent_minus_best_pp": -0.35
+  },
+  "mashqa@600": {
+    "blocks": null,
+    "reason": "no capacity qualifies; enlarge the subset"
+  },
+  "sharegpt@100x2": {
+    "blocks": 1024,
+    "block_size": 16,
+    "gib": 0.5,
+    "subset": {
+      "workload": "sharegpt@100x2",
+      "sessions": 100,
+      "requests": 159,
+      "prompt_tokens": 52562,
+      "arrival_span_s": 105.7
+    },
+    "selection": {
+      "workload": "sharegpt@100x2",
+      "blocks": 1024,
+      "opt_minus_lru_pp": 30.9,
+      "heuristic_spread_pp": 6.88,
+      "lru_evictions": 4790,
+      "lru_evicted_then_missed": 1152,
+      "lru_preemptions": 0,
+      "replay_s": 565,
+      "min_blocks": 348,
+      "ok_headroom": true,
+      "ok_evictions": true,
+      "ok_spread": true,
+      "ok_no_thrash": true,
+      "ok_replay": true,
+      "qualifies": true
+    },
+    "sim_hit_pct": {
+      "LRU": 11.659,
+      "UniCache": 11.659,
+      "LeCaR": 16.894,
+      "Agent": 14.307,
+      "OPT": 42.555,
+      "LFU": 15.403,
+      "FIFO": 10.015
+    },
+    "best_heuristic_tier1": "LeCaR",
+    "predicted_delta_vs_lru_pp": {
+      "UniCache": 0.0,
+      "LeCaR": 5.236,
+      "Agent": 2.648
+    },
+    "predicted_agent_minus_best_pp": -2.587
+  }
+}
