@@ -50,3 +50,33 @@ def agent_policy(workload: str) -> Path:
     rec = json.loads((STUDY / f"agent-runs/{WORKLOADS[workload]['agent_blocks']}/{workload}.json").read_text())
     run = AGENT_RUNS / Path(rec["run"]).name
     return run / "internal" / f"submission-{int(rec['selected']):04d}" / "policy.py"
+
+
+MODEL = ROOT / "models/Llama-3.2-1B-Instruct"  # config + tokenizer only (dummy weights)
+# H1's engine flags (identical in every H1 baseline command.json).
+H1_FLAGS = ["--max-num-seqs", "32", "--max-model-len", "131072", "--block-size", "8",
+            "--simulator-ttft", "3.9e-05 * (batch_size ** 0.997) * (max_len ** 1.014)",
+            "--simulator-tpot", ".01", "--log-level", "WARNING"]
+
+
+def replay_command(python, workload, blocks, policy, run_dir, mode="sim",
+                   use_map=None, step_log=None):
+    """One replay. mode='sim': H1's simulator (virtual time, legacy timing).
+    mode='gpu': the same engine on CUDA in real time (no virtual clock)."""
+    cmd = [str(python), "-m", "policy_agent.replay", "--model", str(MODEL),
+           "--device", "cpu" if mode == "sim" else "cuda", *H1_FLAGS,
+           "--simulator-num-gpu-blocks", str(blocks), "--simulator-num-cpu-blocks", "0",
+           "--eviction-policy", ENGINE_NAME["LRU" if policy == "Agent" else policy],
+           "--simulator-output-dir", str(run_dir),
+           "--simulator-task-config", str(SUBSETS / workload / "eval.yaml")]
+    if mode == "sim":
+        cmd.append("--simulator-enable-virtual-time")
+    else:
+        cmd.append("--disable-simulation")
+    if policy != "NONE":
+        cmd.append("--enable-prefix-caching")
+    if use_map is not None:
+        cmd += ["--opt-block-use-map-path", str(use_map)]
+    if step_log is not None:
+        cmd += ["--simulator-step-log", str(step_log)]
+    return cmd
