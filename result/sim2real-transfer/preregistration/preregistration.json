@@ -1,0 +1,134 @@
+{
+  "alfred": {
+    "blocks": 1024,
+    "gib": 0.25,
+    "subset": {
+      "workload": "alfred",
+      "sessions": 60,
+      "requests": 713,
+      "prompt_tokens": 461282,
+      "arrival_span_s": 55.4
+    },
+    "selection": {
+      "workload": "alfred",
+      "blocks": 1024,
+      "opt_minus_lru_pp": 26.47,
+      "heuristic_spread_pp": 10.45,
+      "lru_evictions": 38631,
+      "lru_evicted_then_missed": 30898,
+      "lru_preemptions": 0,
+      "replay_s": 322,
+      "min_blocks": 486,
+      "ok_headroom": true,
+      "ok_evictions": true,
+      "ok_spread": true,
+      "ok_no_thrash": true,
+      "ok_replay": true,
+      "qualifies": true
+    },
+    "sim_hit_pct": {
+      "LRU": 33.541,
+      "UniCache": 33.541,
+      "LeCaR": 35.446,
+      "Agent": 36.148,
+      "OPT": 60.015,
+      "LFU": 25.0,
+      "FIFO": 33.604
+    },
+    "best_heuristic_tier1": "LeCaR",
+    "predicted_delta_vs_lru_pp": {
+      "UniCache": 0.0,
+      "LeCaR": 1.904,
+      "Agent": 2.607
+    },
+    "predicted_agent_minus_best_pp": 0.702
+  },
+  "codeparrot@600": {
+    "blocks": 8192,
+    "gib": 2.0,
+    "subset": {
+      "workload": "codeparrot@600",
+      "sessions": 600,
+      "requests": 600,
+      "prompt_tokens": 311189,
+      "arrival_span_s": 575.8
+    },
+    "selection": {
+      "workload": "codeparrot@600",
+      "blocks": 8192,
+      "opt_minus_lru_pp": 15.28,
+      "heuristic_spread_pp": 3.24,
+      "lru_evictions": 37500,
+      "lru_evicted_then_missed": 5942,
+      "lru_preemptions": 0,
+      "replay_s": 577,
+      "min_blocks": 704,
+      "ok_headroom": true,
+      "ok_evictions": true,
+      "ok_spread": true,
+      "ok_no_thrash": true,
+      "ok_replay": true,
+      "qualifies": true
+    },
+    "sim_hit_pct": {
+      "LRU": 16.145,
+      "UniCache": 18.929,
+      "LeCaR": 17.756,
+      "Agent": 18.551,
+      "OPT": 31.42,
+      "LFU": 18.684,
+      "FIFO": 15.69
+    },
+    "best_heuristic_tier1": "UniCache",
+    "predicted_delta_vs_lru_pp": {
+      "UniCache": 2.784,
+      "LeCaR": 1.612,
+      "Agent": 2.406
+    },
+    "predicted_agent_minus_best_pp": -0.378
+  },
+  "sharegpt@100x2": {
+    "blocks": 2048,
+    "gib": 0.5,
+    "subset": {
+      "workload": "sharegpt@100x2",
+      "sessions": 100,
+      "requests": 159,
+      "prompt_tokens": 52562,
+      "arrival_span_s": 105.7
+    },
+    "selection": {
+      "workload": "sharegpt@100x2",
+      "blocks": 2048,
+      "opt_minus_lru_pp": 30.88,
+      "heuristic_spread_pp": 6.27,
+      "lru_evictions": 9559,
+      "lru_evicted_then_missed": 2293,
+      "lru_preemptions": 0,
+      "replay_s": 565,
+      "min_blocks": 696,
+      "ok_headroom": true,
+      "ok_evictions": true,
+      "ok_spread": true,
+      "ok_no_thrash": true,
+      "ok_replay": true,
+      "qualifies": true
+    },
+    "sim_hit_pct": {
+      "LRU": 13.089,
+      "UniCache": 13.089,
+      "LeCaR": 17.929,
+      "Agent": 16.225,
+      "OPT": 43.971,
+      "LFU": 15.996,
+      "FIFO": 11.659
+    },
+    "best_heuristic_tier1": "LeCaR",
+    "predicted_delta_vs_lru_pp": {
+      "UniCache": 0.0,
+      "LeCaR": 4.84,
+      "Agent": 3.135
+    },
+    "predicted_agent_minus_best_pp": -1.705
+  }
+}
