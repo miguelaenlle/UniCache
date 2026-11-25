@@ -88,6 +88,20 @@ are fixed in Phase 0 so that each subset's simulated replay is ≤ 10 min. Every
 cut keeps whole sessions, or whole turn prefixes of a session, and keeps the
 recorded arrival times and seeded think times.
 
+**Arrival times.** These are synthetic and come from H1, not from recorded
+traffic; the datasets carry no timestamps.
+* *First turns:* H1's `policy_agent/runner.py` shuffles the sessions (seeded),
+  draws Poisson arrivals at `lambda_rate` = 1 session/s, and freezes them as
+  `frozen_arrivals` in each split's yaml.
+* *Follow-up turns:* each arrives at the previous turn's finish time plus a
+  lognormal think time. The draw is seeded by session id: (μ, σ) = (1.81,
+  1.092) for ALFRED and CodeParrot, a mean of ≈ 11 s; (4.15, 0.971) for
+  ShareGPT, ≈ 100 s.
+
+Subsets keep the frozen times as they are, and the per-session seeding keeps
+think times identical too. The GPU follows the same schedule on the wall
+clock.
+
 H2 is a warning here: its ALFRED subset (2 sessions) had no contention, and all
 policies tied at 97.33%. A subset that is too small has nothing to test.
 ALFRED therefore keeps many concurrent sessions.
