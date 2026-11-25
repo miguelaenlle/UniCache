@@ -1,0 +1,36 @@
+# Apptainer image: the UniCache vLLM fork (V0, torch 2.6) built for GH200 (aarch64, sm_90).
+#   apptainer build --fakeroot unicache.sif unicache.def     (needs unicache-src.tar.gz next to it)
+Bootstrap: docker
+From: nvidia/cuda:12.6.3-devel-ubuntu24.04
+
+%files
+    unicache-src.tar.gz /opt/unicache-src.tar.gz
+
+%environment
+    export PATH=/opt/venv/bin:$PATH
+    export VLLM_USE_V1=0 HF_HUB_OFFLINE=1 VLLM_NO_USAGE_STATS=1 TOKENIZERS_PARALLELISM=false
+    export PYTHONHASHSEED=0 MPLBACKEND=Agg
+
+%post
+    set -e
+    apt-get update
+    apt-get install -y --no-install-recommends python3 python3-venv python3-dev \
+        build-essential cmake ninja-build git ccache util-linux numactl
+    python3 -m venv /opt/venv
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip
+    /opt/venv/bin/pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 \
+        --index-url https://download.pytorch.org/whl/cu126
+    mkdir -p /opt/unicache
+    tar -xzf /opt/unicache-src.tar.gz -C /opt/unicache
+    rm /opt/unicache-src.tar.gz
+    cd /opt/unicache
+    # Not needed here and may lack aarch64 wheels: torchaudio, ray, xformers (x86-only).
+    sed -i '/^torchaudio/d;/^ray\[/d' requirements/cuda.txt
+    /opt/venv/bin/pip install --no-cache-dir -r requirements/build.txt
+    export TORCH_CUDA_ARCH_LIST="9.0" VLLM_TARGET_DEVICE=cuda MAX_JOBS=${MAX_JOBS:-16}
+    /opt/venv/bin/pip install --no-cache-dir --no-build-isolation -e .
+    /opt/venv/bin/pip install --no-cache-dir pyyaml
+    apt-get clean && rm -rf /var/lib/apt/lists/* /root/.cache
+
+%test
+    /opt/venv/bin/python -c "import torch, vllm; print(torch.__version__, torch.cuda.is_available())"

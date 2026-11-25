@@ -58,9 +58,15 @@ def baseline_command(workload: str) -> Path:
 
 
 def agent_policy(workload: str) -> Path:
-    """The selected submission's policy.py for the workload's best agent."""
+    """The selected submission's policy.py for the workload's best agent.
+
+    On machines without the H1 results (DeltaAI), set SIM2REAL_AGENT_DIR to a
+    directory holding <base workload>.py copies (see make_bundle.py)."""
     import json
+    import os
     s = spec(workload)
+    if os.environ.get("SIM2REAL_AGENT_DIR"):
+        return Path(os.environ["SIM2REAL_AGENT_DIR"]) / f"{s['base']}.py"
     rec = json.loads((STUDY / f"agent-runs/{s['agent_blocks']}/{s['base']}.json").read_text())
     run = AGENT_RUNS / Path(rec["run"]).name
     return run / "internal" / f"submission-{int(rec['selected']):04d}" / "policy.py"
@@ -68,21 +74,24 @@ def agent_policy(workload: str) -> Path:
 
 MODEL = ROOT / "models/Llama-3.2-1B-Instruct"  # config + tokenizer only (dummy weights)
 # H1's engine flags (identical in every H1 baseline command.json).
-H1_FLAGS = ["--max-num-seqs", "32", "--max-model-len", "131072", "--block-size", "8",
+# Block size is a parameter: H1 used 8, but on CUDA this fork runs 8-token blocks
+# only through xformers (x86-only), so the sim2real runs use 16 on both sides.
+H1_FLAGS = ["--max-num-seqs", "32", "--max-model-len", "131072",
             "--simulator-ttft", "3.9e-05 * (batch_size ** 0.997) * (max_len ** 1.014)",
             "--simulator-tpot", ".01", "--log-level", "WARNING"]
 
 
 def replay_command(python, workload, blocks, policy, run_dir, mode="sim",
-                   use_map=None, step_log=None):
+                   use_map=None, step_log=None, block_size=8, task_config=None):
     """One replay. mode='sim': H1's simulator (virtual time, legacy timing).
     mode='gpu': the same engine on CUDA in real time (no virtual clock)."""
     cmd = [str(python), "-m", "policy_agent.replay", "--model", str(MODEL),
            "--device", "cpu" if mode == "sim" else "cuda", *H1_FLAGS,
+           "--block-size", str(block_size),
            "--simulator-num-gpu-blocks", str(blocks), "--simulator-num-cpu-blocks", "0",
            "--eviction-policy", ENGINE_NAME["LRU" if policy == "Agent" else policy],
            "--simulator-output-dir", str(run_dir),
-           "--simulator-task-config", str(SUBSETS / workload / "eval.yaml")]
+           "--simulator-task-config", str(task_config or SUBSETS / workload / "eval.yaml")]
     if mode == "sim":
         cmd.append("--simulator-enable-virtual-time")
     else:

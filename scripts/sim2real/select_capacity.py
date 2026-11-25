@@ -30,7 +30,7 @@ HEUR = ["LRU", "UniCache", "LeCaR", "LFU", "FIFO"]
 TIER1 = ["LRU", "UniCache", "LeCaR", "Agent"]
 
 
-def largest_request_blocks(workload):
+def largest_request_blocks(workload, block_size):
     biggest = 0
     with open(SUBSETS / workload / "eval.jsonl") as f:
         for line in f:
@@ -38,18 +38,19 @@ def largest_request_blocks(workload):
             for t in range(1, s["num_turns"] + 1):
                 turn = s[f"turn_{t}"]
                 biggest = max(biggest, len(turn["input_ids"]) + len(turn.get("response_ids", [])))
-    return math.ceil(biggest / 8)
+    return math.ceil(biggest / block_size)
 
 
 def main():
     sweep, out = Path(sys.argv[1]), Path(sys.argv[2])
+    block_size = int(sys.argv[3]) if len(sys.argv) > 3 else 8
     rows = [r for r in csv.DictReader(open(sweep / "runs.csv")) if r["status"] == "0"
             and r["policy"] != "NONE"]
     by = {(r["workload"], int(r["blocks"]), r["policy"]): r for r in rows}
     subsets = {s["workload"]: s for s in json.loads((SUBSETS / "subsets.json").read_text())}
     table, prereg = [], {}
     for w in sorted({r["workload"] for r in rows}):
-        need = 2 * largest_request_blocks(w)
+        need = 2 * largest_request_blocks(w, block_size)
         cands = []
         for b in sorted({k[1] for k in by if k[0] == w}):
             get = lambda p: by.get((w, b, p))
@@ -82,7 +83,8 @@ def main():
                 if (w, b, p) in by}
         best_heur = max(["LRU", "UniCache", "LeCaR"], key=lambda p: hits[p])
         prereg[w] = {
-            "blocks": b, "gib": round(b * 8 * 32768 / 2**30, 3),  # 32 KiB/token for 1B
+            "blocks": b, "block_size": block_size,
+            "gib": round(b * block_size * 32768 / 2**30, 3),  # 32 KiB/token for 1B
             "subset": subsets[w], "selection": best,
             "sim_hit_pct": {p: round(v, 3) for p, v in hits.items()},
             "best_heuristic_tier1": best_heur,
@@ -100,8 +102,8 @@ def main():
     (out / "preregistration.json").write_text(json.dumps(prereg, indent=2))
 
     lines = ["# Sim2real pre-registration (simulator predictions before any GPU run)", "",
-             "Simulator: H1's UniCache simulator (legacy timing), eval-split subsets, "
-             "0 CPU blocks. Hit ratios in %, deltas in pp.", "",
+             f"Simulator: H1's UniCache simulator (legacy timing), eval-split subsets, "
+             f"{block_size}-token blocks, 0 CPU blocks. Hit ratios in %, deltas in pp.", "",
              "| Workload | Sessions | Requests | C* (blocks) | OPT−LRU | LRU | UniCache | LeCaR | Agent | OPT | Agent−LRU | Agent−Best | Best (tier 1) |",
              "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"]
     for w, p in prereg.items():

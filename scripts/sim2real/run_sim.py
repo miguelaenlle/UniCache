@@ -25,16 +25,23 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import ROOT, agent_policy, replay_command  # noqa: E402
+import yaml  # noqa: E402
 
-def run(workload, blocks, policy, out, use_map=None, mode="sim", rep=0):
+from common import ROOT, SUBSETS, agent_policy, replay_command  # noqa: E402
+
+def run(workload, blocks, policy, out, use_map=None, mode="sim", rep=0, block_size=8):
     run_dir = out / workload / str(blocks) / (policy if rep == 0 else f"{policy}/rep-{rep}")
     done = sorted(run_dir.glob("*/summary.json"))
     if not done:
         run_dir.mkdir(parents=True, exist_ok=True)
         step_log = run_dir / "steps.csv" if mode == "gpu" else None
+        # The subset's task config, with its data path resolved on this machine.
+        tasks = yaml.safe_load((SUBSETS / workload / "eval.yaml").read_text())
+        for task in tasks["tasks"]:
+            task["data_path"] = str(SUBSETS / workload / "eval.jsonl")
+        (run_dir / "tasks_config.yaml").write_text(yaml.safe_dump(tasks, sort_keys=False))
         cmd = replay_command(sys.executable, workload, blocks, policy, run_dir, mode,
-                             use_map, step_log)
+                             use_map, step_log, block_size, run_dir / "tasks_config.yaml")
         env = dict(os.environ, PYTHONHASHSEED="0", VLLM_USE_V1="0", HF_HUB_OFFLINE="1",
                    VLLM_NO_USAGE_STATS="1", TOKENIZERS_PARALLELISM="false",
                    MPLBACKEND="Agg", COLLECT_TRACE="1" if policy == "NONE" else "0",
@@ -101,6 +108,7 @@ def main():
     p.add_argument("--jobs", type=int, default=3)
     p.add_argument("--mode", choices=["sim", "gpu"], default="sim",
                    help="gpu: same engine on CUDA in real time, one run at a time")
+    p.add_argument("--block-size", type=int, default=8, help="tokens per KV block")
     p.add_argument("--repeat", type=int, default=1,
                    help="gpu only: run each policy this many times (rep-<k> dirs)")
     args = p.parse_args()
@@ -109,7 +117,7 @@ def main():
     if args.mode == "gpu":
         if "OPT" in args.policies or args.jobs != 1:
             p.error("GPU mode: no OPT (its future map is stale under real timing), --jobs 1")
-        rows = [run(w, b, pol, out, mode="gpu", rep=k)
+        rows = [run(w, b, pol, out, mode="gpu", rep=k, block_size=args.block_size)
                 for w in args.workloads for b in args.blocks
                 for pol in args.policies for k in range(args.repeat)]
         write_rows(rows, out)
@@ -121,9 +129,9 @@ def main():
         if "OPT" in args.policies:
             # Legacy timing schedules prefills identically for every policy and
             # capacity, so one NONE profile per workload gives OPT's future map.
-            profiles = {w: pool.submit(run, w, max(args.blocks), "NONE", out)
+            profiles = {w: pool.submit(run, w, max(args.blocks), "NONE", out, block_size=args.block_size)
                         for w in args.workloads}
-        futures = [pool.submit(run, w, b, pol, out)
+        futures = [pool.submit(run, w, b, pol, out, block_size=args.block_size)
                    for w in args.workloads for b in args.blocks
                    for pol in args.policies if pol != "OPT"]
         if "OPT" in args.policies:
@@ -132,7 +140,8 @@ def main():
                 maps[w] = out / r["result_dir"] / "use_map.json"
                 if maps[w].stat().st_size < 100:
                     raise SystemExit(f"{w}: empty OPT use map {maps[w]}")
-                futures += [pool.submit(run, w, b, "OPT", out, maps[w]) for b in args.blocks]
+                futures += [pool.submit(run, w, b, "OPT", out, maps[w], block_size=args.block_size)
+                            for b in args.blocks]
         rows = [f.result() for f in futures]
         rows += [f.result() for f in profiles.values()] if "OPT" in args.policies else []
 
