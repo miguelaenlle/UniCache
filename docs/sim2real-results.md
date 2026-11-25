@@ -23,18 +23,19 @@ trace costs 1 GPU-hour.
 | CodeParrot | single-turn code | first 600 sessions | 600 | 311k | 9.6 min |
 | ShareGPT | multi-turn chat | first 100 sessions, ≤ 2 turns each | 159 | 53k | 9.4 min |
 
-**Arrival times are synthetic, not recorded.** The source datasets have no
-request timestamps. H1's harness (`policy_agent/runner.py`) shuffled the
-sessions with a fixed seed, then drew **Poisson session arrivals at 1 session
-per second** (exponential gaps). It froze those times into each split's yaml
-(`frozen_arrivals`), so every run uses identical start times. In multi-turn
-traces, each follow-up turn arrives when the previous turn *finishes*, plus a
-**lognormal think time** seeded per session (mean ≈ 11 s for ALFRED,
-≈ 100 s for ShareGPT). CodeParrot is single-turn, so only the first-turn
-arrivals apply. The subsets keep these frozen H1 times unchanged, and the GPU
-releases requests on the same schedule in real time. "Real" here therefore
-means real execution on a real GPU under H1's synthetic schedule, not a
-production arrival trace. This follows the UniCache paper's convention.
+**Arrival times (our design choice).** The datasets have no timestamps, so
+we generate the arrivals:
+* *First turns:* sessions are shuffled with a fixed seed and arrive as a
+  **Poisson process at 1 session per second**. The times are drawn once and
+  frozen into each split's yaml (`frozen_arrivals`, written by
+  `policy_agent/runner.py`), so every run uses identical start times.
+* *Follow-up turns* (multi-turn traces only): each arrives when the previous
+  turn **finishes**, plus a **lognormal think time** seeded per session. The
+  mean is ≈ 11 s for ALFRED and ≈ 100 s for ShareGPT.
+
+The subsets keep these times unchanged, and the GPU releases requests on the
+same schedule in real time. "Real" here means real execution on a real GPU
+under our arrival schedule.
 
 Not used: MASH-QA, because every policy is within ~1 pp of every other at
 every size we could afford, so there is no decision to test. AgentBank APPS

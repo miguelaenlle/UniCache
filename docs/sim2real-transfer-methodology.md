@@ -88,9 +88,9 @@ are fixed in Phase 0 so that each subset's simulated replay is ≤ 10 min. Every
 cut keeps whole sessions, or whole turn prefixes of a session, and keeps the
 recorded arrival times and seeded think times.
 
-**Arrival times.** These are synthetic and come from H1, not from recorded
-traffic; the datasets carry no timestamps.
-* *First turns:* H1's `policy_agent/runner.py` shuffles the sessions (seeded),
+**Arrival times (our design choice, set in H1).** The datasets have no
+timestamps, so we generate the arrivals.
+* *First turns:* `policy_agent/runner.py` shuffles the sessions (seeded),
   draws Poisson arrivals at `lambda_rate` = 1 session/s, and freezes them as
   `frozen_arrivals` in each split's yaml.
 * *Follow-up turns:* each arrives at the previous turn's finish time plus a
