@@ -5,11 +5,14 @@ the plan against the code). Nothing has run on DeltaAI yet.
 
 ## Goals
 
-1. **Calibrate** the simulator's aiconfigurator step timing to a GH200, so
-   that its TTFT/ITL can be trusted for Llama-3.2-1B. aiconfigurator has no
-   GH200 table. The GH200 has the same H100 die, with more memory bandwidth and a
-   Grace (aarch64) host, so we fit a per-phase correction on top of `h100_sxm`:
-   `step_ms = scale[phase] · aic_ms + overhead_ms[phase]`.
+1. **Build a native `gh200` aiconfigurator system** (spec yaml + measured
+   GEMM/attention tables), then fit only the engine's per-step CPU overhead on
+   top, so that the simulator's TTFT/ITL can be trusted for Llama-3.2-1B on
+   GH200. Serving target: 1 GH200 (96 GB HBM3) per worker, either 1 worker or 8
+   data-parallel workers. DP workers are independent engines, so they share
+   one per-GPU table and need no communication tables. The fallback, and a
+   baseline to compare against, is a per-phase correction on top of
+   `h100_sxm`: `step_ms = scale[phase] · aic_ms + overhead_ms[phase]`.
 2. **Test sim2real transfer of H1:** do the hit ratios the simulator gave the
    H1 policies (report Table 2) hold on a real GPU? Do the agent's gain over LRU
    and its gap to the best heuristic carry over? And does simulator timing
@@ -17,14 +20,14 @@ the plan against the code). Nothing has run on DeltaAI yet.
    the simulator's timing matters for policy search or it doesn't.
 
 Llama-3.1-8B is dropped for now. It is in neither H1 nor the transfer test, and
-dropping it saves P2 time, 16 GB of disk and the grid's memory risk. Add it
+dropping it saves collection and replay time and 16 GB of disk. Add it
 later for the "larger models make hits matter more for latency" question.
 
 ## Budget
 
 | Resource | Plan |
 |---|---|
-| GH200 hours | **≈ 5–6 GPU-hours total**: smoke (≤ 15 min), calibration grid + subsets (≤ 1 h), transfer replays (≈ 4.5 h with truncation; ≈ 9 h without). 1 GPU per job on the batch partition `ghx4` (charge 1.0; interactive is 2.0). Never a whole node (charged as 4 GPUs). Everything else runs on the laptop, at 0 GPU-hours. |
+| GH200 hours | **≈ 7–8 GPU-hours total**: smoke (≤ 15 min), table collection (≤ 2 h), calibration subsets (≤ 30 min), transfer replays (≈ 4.5 h with truncation; ≈ 9 h without). 1 GPU per job on the batch partition `ghx4` (charge 1.0; interactive is 2.0). Never a whole node (charged as 4 GPUs). Everything else runs on the laptop, at 0 GPU-hours. |
 | DeltaAI disk | ≈ 10 GB, < 1,000 files, under `/work/hdd/bcjw/maenlle2/kvcal` (confirm on DeltaAI; `/work/nvme/bcjw` is over its soft quota and home is at 93/100 GB). Software lives in one container image. No weights download: GPU mode runs `load_format="dummy"`, so only config and tokenizer are needed. Run caches go to `$TMPDIR`; each job tars its outputs into one file. |
 | Laptop | Only CSV/JSON results come back (≈ 50 MB). Simulations run ≤ 3 at a time (an ALFRED replay holds ≈ 3 GB). |
 
@@ -57,6 +60,89 @@ later for the "larger models make hits matter more for latency" question.
   (`agent-runs/<blocks>/<trace>.json` names each agent run and its selected
   submission). The `2026-11-01-v1-verified` directory lacks some Table 2 runs,
   for example ALFRED at 8 GiB.
+
+## Native GH200 table
+
+What aiconfigurator has today (installed `aiconfigurator_core` 0.12.0,
+`systems/`): a spec yaml per system plus measured kernel tables (parquet)
+under `data/<system>/<op>/<backend>/<version>/`. A dense Llama step on vLLM
+reads three tables:
+
+* `gemm/vllm/0.24.0/gemm_perf.parquet` (m, n, k, dtype → ms; 107k rows on H100),
+* `attention/vllm/0.24.0/context_attention_perf.parquet` (batch, isl, heads,
+  kv heads, head dim, dtypes → ms; 51k rows),
+* `attention/vllm/0.24.0/generation_attention_perf.parquet` (batch, context
+  length as `step`, heads, … → ms; 62k rows).
+
+Other per-step costs (elementwise ops, norms, memory moves) are modelled
+analytically from the yaml's `mem_bw` and `bfloat16_tc_flops`.
+`h200_sxm.yaml` differs from `h100_sxm.yaml` only in `mem_bw`,
+`mem_capacity`, NCCL version and `data_dir`; its tables are separately
+measured.
+
+H100 rows for Llama-3.2-1B's shapes (hidden 2048, 32 heads / 8 KV heads, head
+dim 64, MLP 8192), in ms:
+
+| GEMM (n × k) | m = 1 | m = 32 | m = 512 | m = 4096 |
+|---|---:|---:|---:|---:|
+| qkv_proj (3072 × 2048) | 0.0075 | 0.0077 | 0.0114 | 0.0708 |
+| o_proj (2048 × 2048) | 0.0067 | 0.0066 | 0.0109 | 0.0468 |
+| gate_up (16384 × 2048) | 0.0287 | 0.0256 | 0.0460 | 0.3703 |
+| down (2048 × 8192) | 0.0154 | 0.0161 | 0.0338 | 0.1612 |
+| lm_head (128256 × 2048) | not in table | | | |
+
+Generation attention, 32/8/64 heads, batch 1, bf16 KV: 0.0104 ms at context 1
+to 0.0159 ms at context 8191. Context attention, batch 1: 0.0105 ms at isl 1 to
+0.0176 ms at isl 256. Per layer these are microseconds; a 1B decode step is 16
+layers of them plus `lm_head` plus engine CPU time. That is why the CPU
+overhead term matters as much as the tables.
+
+**Draft `gh200.yaml`** (fields as in `h100_sxm.yaml`; values from the GH200
+96 GB datasheet, **to be confirmed** with `nvidia-smi -q` in P1):
+
+```yaml
+data_dir: data/gh200
+gpu:
+  mem_bw: 4000000000000            # 4.0 TB/s HBM3 (96 GB part; the 144 GB HBM3e part is 4.9)
+  mem_bw_empirical_scaling_factor: 0.8
+  mem_empirical_constant_latency: 0.000003
+  mem_capacity: <from nvidia-smi>  # ~96 GB
+  bfloat16_tc_flops: 989000000000000   # same H100 die
+  int8_tc_flops: 1979000000000000
+  fp8_tc_flops: 1979000000000000
+  power: <module limit on DeltaAI> # GH200 module TDP is configurable (CPU+GPU)
+  sm_version: 90
+node:
+  num_gpus_per_node: 4             # DeltaAI ghx4; unused at TP=1
+  # inter/intra-node bandwidths: unused for TP=1 / DP; copy H100 values as placeholders
+```
+
+**Collection.** aiconfigurator's collector (`collector/collect.py` in
+github.com/ai-dynamo/aiconfigurator) runs upstream vLLM kernels, so it needs
+an upstream aarch64 vLLM container, **not** our fork. That removes the fork build from
+the critical path for goal 1.
+* Scope it to what we need: model-centric collection for Llama-3.2-1B
+  (`--model-path`, `--gpu gh200`, `--backend vllm`), ops gemm and attention
+  only, bf16, no comm. First run `--plan-only` on the login node (0 GPU-hours)
+  to count cases, then `--smoke` in P1 to time them. For scale, the docs give
+  about 30 GPU-hours for a *full* TensorRT-LLM collection. Ours is a small
+  slice, so cap it at 2 h.
+* Use the vLLM version pinned in `collector/framework_manifest.yaml`. Ideally
+  it is 0.24.0 to match `h100_sxm`, so H100 and GH200 rows compare like for like.
+* The collector docs ask for exclusive nodes and locked clocks (`sudo
+  nvidia-smi -ac`). We have no sudo on DeltaAI. Record the clocks and power
+  limit instead, and take medians of repeats.
+* Output goes into a `systems/` directory of our own. The simulator selects it
+  through the engine config's `systems_path` field (`step_timing.py` currently
+  passes `None`): add a `--simulator-aic-systems-path` flag.
+* Note: the aiconfigurator README says the project is in maintenance-only
+  transition to AISimulate (github.com/ai-dynamo/aisimulate). Check whether
+  AISimulate reads the same system/table format before investing further.
+
+**What gets compared** (the ablation, all on held-out GPU replays):
+(i) `h100_sxm` raw; (ii) `h100_sxm` + scale/overhead fit; (iii) `gh200`
+native + overhead fit only. If the native table is right, (iii) needs a scale
+of about 1, and it should match or beat (ii) on held-out workloads.
 
 ## The transfer test design
 
@@ -136,9 +222,8 @@ moved hit ratio by only −0.2 to −0.3 pp. So L0 measures that sensitivity
      with the target selectable (`measured_ms` or `loop_ms`). Replace the
      random-row holdout with a workload holdout: consecutive decode steps are
      near-duplicates.
-   * `profile_steps_grid.py`: block size 8, `max_num_seqs` 32, batch ≤ 32,
-     dummy weights. Use it for residual diagnostics only, never mixed into a
-     fit: it times a whole `generate` call, not one step.
+   * Add `--simulator-aic-systems-path` so the simulator can load the native
+     `gh200` system.
 5. **Policy manifest.** For each chosen config, list the agent `policy.py`
    (run dir, selected submission, sha256) and the baseline commands. Read each
    policy. On DeltaAI there is no Seatbelt, so policies run with networking
@@ -158,8 +243,8 @@ moved hit ratio by only −0.2 to −0.3 pp. So L0 measures that sensitivity
    * (a2) Otherwise compile inside an arm64 PyTorch container, for sm_90 only.
      It needs nvcc, not a GPU. Check NCSA policy on heavy login-node builds; a
      CPU-only job is the alternative.
-   * (b) Upstream vLLM (V1) supports the calibration grid only. **It cannot
-     run the transfer test**: there are no forced outputs and no policy hooks.
+   * (b) Upstream vLLM (V1) is enough for table collection (P2a). **It cannot
+     run the transfer test or the GPU-mode replays**: there are no forced outputs and no policy hooks.
      So T is gated on (a1) or (a2).
 3. Check that networking can be switched off for policy runs: `apptainer exec
    --net --network none`, or `unshare -rn`.
@@ -173,14 +258,22 @@ moved hit ratio by only −0.2 to −0.3 pp. So L0 measures that sensitivity
 `nvidia-smi`; the container sees the GPU; a 20-session demo replay in GPU mode
 with the new step-log columns; one agent policy loads via
 `UNICACHE_POLICY_CANDIDATE` with networking off; GPU mode accepts 32,768 (and
-50,000) GPU blocks with the chosen CPU-block setting; two grid points.
+50,000) GPU blocks with the chosen CPU-block setting; the collector's
+`--smoke` run in the upstream vLLM container, to time the cases.
 Copy the outputs back and check the columns and that times are sane (a 1B
 decode step should take a few ms). Stop here if anything is off.
 
-### P2. Calibration job (≤ 1 h, 1 GPU)
+### P2a. Table collection job (≤ 2 h, 1 GPU, upstream vLLM container)
+
+aiconfigurator's collector for Llama-3.2-1B gemm + attention on `gh200`
+(see "Native GH200 table"). It needs neither our fork nor its build, so it
+can run even if P0 step 2 fails.
+
+### P2b. Calibration job (≤ 30 min, 1 GPU)
 
 The five H2 subsets with LRU only (for continuity with H2, and ShareGPT's
-decode-timing question), then the restricted grid. Most of the calibration
+decode-timing question). `profile_steps_grid.py` is dropped: the collected
+tables replace it. Most of the calibration
 data comes from T2, because those runs are in the right regime (block size
 8, 16k–50k blocks, full sessions).
 
@@ -240,5 +333,5 @@ re-score H1 under S2.
 1. The DeltaAI account name (Delta's is `bcjw-delta-gpu`; DeltaAI allocations
    are separate), and whether `/work/hdd/bcjw` is the right place there.
 2. Whether building on the login node is OK, or it should be a CPU-only job.
-3. The budget: ≈ 5–6 GPU-hours as planned (3 truncated configs), or ≈ 20 for
-   all nine Table 2 configs.
+3. The budget: ≈ 7–8 GPU-hours as planned (native table + 3 truncated
+   configs), or ≈ 22 for all nine Table 2 configs.
