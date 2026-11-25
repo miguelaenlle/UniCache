@@ -4,6 +4,13 @@ Status, 2026-11-25: **simulator side done; GPU side not run yet.** GPU
 columns show "—" until the GH200 runs finish. The simulator numbers below were
 committed before any GPU run (`result/sim2real-transfer/preregistration-b16/`).
 **First GPU job: ALFRED only**; CodeParrot and ShareGPT follow if it works.
+**GPU route:** DeltaAI's GH200 queue currently estimates a start about a day
+away, so the first run may instead go to a teammate's **A100** (x86). There,
+the fork's 8-token-block path works, so that run uses H1's 8-token blocks and
+the 8-token pre-registration (`preregistration/`: ALFRED at 1,024 blocks, LRU
+33.54, UniCache 33.54, LeCaR 35.45, Agent 36.15). A GH200 run uses the 16-token
+numbers below. The results table will say which run each GPU number comes
+from.
 Full methodology: [sim2real-transfer-methodology.md](sim2real-transfer-methodology.md).
 
 ## 1. Question
