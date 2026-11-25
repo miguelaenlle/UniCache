@@ -75,7 +75,15 @@ tune, as in the report) and cut one subset:
 | ShareGPT | yes | Multi-turn chat; H2's 51 pp error, attributed to decode timing | First 150 sessions (≈ 2.5 min of arrivals), at most 4 turns each (mean 2.9; think time ≈ 100 s) |
 | AgentBank APPS | no | OPT−LRU headroom < 0.5 pp at every H1 capacity, so no contention to test | n/a |
 
-The session counts and turn caps above are starting points. The final values
+**Phase 0 outcome (2026-11-25, pre-registered in
+`result/sim2real-transfer/preregistration/`):** ALFRED 60 sessions × ≤ 12 turns at
+1,024 blocks; CodeParrot 600 sessions at 8,192 blocks (300 gave < 2 pp
+heuristic spread); ShareGPT 100 sessions × ≤ 2 turns at 2,048 blocks (150 × 4
+replayed for 40 min because of long think times). MASH-QA is excluded: no
+capacity gave ≥ 2 pp heuristic spread even at 900 sessions. Replays are
+322–577 s.
+
+The session counts and turn caps above were starting points. The final values
 are fixed in Phase 0 so that each subset's simulated replay is ≤ 10 min. Every
 cut keeps whole sessions, or whole turn prefixes of a session, and keeps the
 recorded arrival times and seeded think times.
