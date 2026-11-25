@@ -495,6 +495,8 @@ class Simulator:
         summary = {}
         summary["global_time"] = self.get_time() - self.start_time
         summary["simulation_time"] = simulation_time
+        from vllm.simulator.cache_stats import CACHE_STATS
+        summary["cache_stats"] = dict(CACHE_STATS)
         summary["simulator_data"] = {
             "max_records":
             len(self.session_data),

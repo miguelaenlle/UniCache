@@ -1852,6 +1852,8 @@ class Scheduler:
                 self.num_cumulative_preemption + 1,
             )
         self.num_cumulative_preemption += 1
+        from vllm.simulator.cache_stats import record_preemption
+        record_preemption()
 
         if preemption_mode == PreemptionMode.RECOMPUTE:
             self._preempt_by_recompute(seq_group)

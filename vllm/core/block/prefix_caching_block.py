@@ -466,6 +466,8 @@ class PrefixCachingBlockAllocator(BlockAllocator):
                                       block_id=block.block_id)
             return block
         self.metric_data.query(hit=False)
+        from vllm.simulator.cache_stats import record_miss
+        record_miss(block.content_hash)
         self._block_pool.free_block(block)
 
         # No cached block => Allocate a new block
@@ -759,6 +761,8 @@ class PrefixCachingBlockAllocator(BlockAllocator):
         # and since its content would be changed, we need
         # to remove it from _cached_blocks's tracking list
         block_id, content_hash_to_evict = self.evictor.evict()
+        from vllm.simulator.cache_stats import record_eviction
+        record_eviction(content_hash_to_evict)
         if GLOBAL_SIMULATOR_CONFIG.enable_block_hit_track:
             get_global_output_simulator().update_evicted_block(block_id)
 
