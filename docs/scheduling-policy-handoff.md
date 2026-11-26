@@ -80,6 +80,163 @@ ratio summary.
 The mid-semester report (the project's full writeup) is not in the repo. Ask
 the team for the PDF.
 
+## 0.5 Where the project stands: what we have and what has run
+
+### What we have
+
+The system is a simulator of one vLLM serving instance, plus a coding agent
+that rewrites one component of it, the eviction policy:
+
+```mermaid
+flowchart LR
+    subgraph Trace["Trace input (TaskData, not in git)"]
+        T1["Sessions: prompt and output token ids<br/>(ShareGPT, MASH-QA, CodeParrot, APPS, ALFRED)"]
+        T2["Arrivals: Poisson first turns at 1 session/s, frozen in the split yaml<br/>follow-ups at finish + lognormal think time"]
+    end
+    subgraph Sim["UniCache simulator (vllm/simulator/simulator.py)"]
+        L["Event loop: releases requests on the virtual clock"]
+        S["vLLM V0 scheduler<br/>(vllm/core/scheduler.py)<br/>FCFS admission, newest-first preemption"]
+        B["Block manager + prefix cache<br/>(vllm/core/block/prefix_caching_block.py)"]
+        E["Evictor<br/>(vllm/core/evictor.py)"]
+        TM["Step timing: legacy formula or<br/>aiconfigurator tables (+ GH200 calibration)"]
+    end
+    W["Sandboxed policy worker<br/>(policy_agent/v2_worker.py, offline)<br/>runs the agent's policy.py"]
+    O["Outputs: hit ratio, cache_stats,<br/>latency_requests.csv / latency_summary.json"]
+    T1 --> L
+    T2 --> L
+    L --> S --> B --> E
+    E -- "events, evict() calls" --> W
+    W -- "victim block" --> E
+    S --> TM --> L
+    L --> O
+```
+
+* **Model and outputs.** No weights are used. Llama-3.2-1B-Instruct sets the
+  shapes, and each request's output is forced to the trace's recorded tokens.
+  Hit ratios therefore depend only on scheduling and eviction.
+* **Same code on a GPU.** `--disable-simulation --device cuda` runs real
+  forward passes (dummy weights) on wall-clock time through the same
+  scheduler, block manager and evictor. That is how sim2real works.
+
+The agent loop, `./policy-agent run` (`policy_agent/runner.py`):
+
+```mermaid
+sequenceDiagram
+    participant A as Coding agent (Claude, sandboxed workspace)
+    participant R as runner.py (trusted)
+    participant S as Simulator
+    A->>A: edit policy.py, run smoke_test.py and its own offline tests
+    A->>R: submit.py --rationale-file
+    R->>S: replay the TUNE split with policy.py
+    S-->>R: hit ratio (and TTFT/ITL under aic timing)
+    R-->>A: aggregate tune feedback only, attempts left
+    Note over A,R: repeats up to 30 submissions, the agent may stop early
+    R->>S: best tune submission, replayed once on EVAL
+    Note over R: eval scores, eval traces and OPT never enter the workspace
+```
+
+### What has been run
+
+```mermaid
+flowchart TB
+    H1["H1: agent vs heuristics, hit ratio<br/>5 traces x 4 cache sizes, simulator<br/>(done, report Table 2)"]
+    H2["H2 v1: sim vs A100, 485 requests, 512 blocks<br/>(done, report Tables 3-4)"]
+    AIC["Latency in the simulator: aiconfigurator step tables<br/>+ TTFT/ITL metrics + load sweep (done, uncalibrated)"]
+    PRE["Sim2real transfer test: subsets + cache sizes<br/>with real contention, pre-registered (done)"]
+    GPU["GH200 runs on DeltaAI: ALFRED done,<br/>CodeParrot 3 of 4 policies, ShareGPT not run"]
+    CAL["GH200 timing calibration v0-v8<br/>(v8 final: fit on a synthetic sweep, validated on traces)"]
+    ST3["Agent with a TTFT objective, CodeParrot-600 at 25x load<br/>(ran once: no improvement found)"]
+    SCH["Scheduling-policy agent<br/>(this doc: not started)"]
+    H1 --> H2 --> AIC --> PRE --> GPU --> CAL --> ST3 --> SCH
+    style SCH stroke-dasharray: 5 5
+```
+
+**H1: agents vs heuristics (simulator, hit ratio).** Claude Opus, 30
+submissions, starting from LRU, 8-token blocks. On the 9 configurations with
+more than 5 pp of tune headroom (eval, pp):
+
+| Trace | Cache (GiB) | Best heuristic | OPT − LRU | Agent − LRU | Agent − best |
+|---|---:|---|---:|---:|---:|
+| ShareGPT | 4 | UniCache | 19.95 | +0.04 | +0.04 |
+| MASH-QA | 4 | LeCaR | 25.05 | −0.12 | −0.07 |
+| CodeParrot | 4 | UniCache | 33.64 | +4.88 | −3.59 |
+| MASH-QA | 8 | UniCache | 26.55 | +0.09 | −0.22 |
+| ALFRED | 8 | LeCaR | 29.10 | +10.08 | −0.71 |
+| CodeParrot | 8 | UniCache | 26.62 | +11.40 | −2.46 |
+| MASH-QA | 12.207 | UniCache | 24.83 | −0.16 | −2.22 |
+| CodeParrot | 12.207 | UniCache | 13.65 | +10.84 | −2.63 |
+| MASH-QA | 24 | UniCache | 8.81 | +1.22 | −1.23 |
+| **Average** | | | 23.13 | **+4.25** | **−1.46** |
+
+So agents beat LRU but not yet the best existing heuristic.
+
+**H2 v1: simulator vs A100 (hit ratio).** 485 requests from the five traces,
+512 blocks. Mean absolute sim-vs-GPU error was 0.05–1.45 pp on four traces.
+UniCache's gain over LRU agreed within 0.3–0.7 pp. ShareGPT was off by about
+51 pp: its follow-up turns arrive after the previous turn finishes, so its
+reuse depends on decode timing, and legacy timing charges 10 ms per decode
+step, where the GPU takes 2–4 ms.
+
+**Latency in the simulator.** `--simulator-timing aic` charges each engine
+step from aiconfigurator's measured kernel tables, so cache hits shorten
+prefill. Every run writes TTFT/ITL/E2E (`docs/aic-timing.md`). Under legacy
+timing all eviction policies have identical TTFT.
+
+**Sim2real transfer test on one GH200** (16-token blocks, simulator numbers
+pre-registered before any GPU run, `docs/sim2real-results.md`). Hit ratio, %:
+
+| Trace (cache) | Policy | Simulator (legacy) | GH200 |
+|---|---|---:|---:|
+| ALFRED, 60 sessions (512 blocks) | LRU | 33.45 | 34.91 / 34.95 (2 runs) |
+| | UniCache | 33.45 | 34.73 |
+| | LeCaR | 35.34 | 37.47 |
+| | Agent (H1) | 35.25 | 37.58 |
+| CodeParrot, 600 sessions (4,096 blocks) | LRU | 16.05 | 15.88 |
+| | UniCache | 18.89 | 18.93 |
+| | LeCaR | 18.19 | 17.89 |
+| | Agent (H1) | 18.54 | pending |
+
+On ALFRED, every gap to LRU has the same sign on both sides. UniCache's gap
+transfers. LeCaR's (sim +1.89, GPU +2.56) and the agent's (sim +1.80, GPU +2.66)
+are 0.7–0.9 pp off, beyond the 0.5 pp tolerance. ShareGPT has not been run.
+
+**GH200 timing calibration.** Calibrations v0–v8 fitted the simulator's step
+times to GH200 measurements. **v8 is final.** It is fit on a synthetic sweep
+only, with a direct prefill/decode step model, a cost per evicted block, a
+cost per request arrival (tokenization) and a cost per policy-worker call. It
+was validated on 9 held-out trace conditions:
+
+| Metric vs GH200 | Untuned (legacy) | v8 |
+|---|---:|---:|
+| Hit ratio, mean abs diff | 0.65 pp | 0.12 pp |
+| ITL, median abs error | 348 % | 3 % |
+| TTFT, median abs error | 137 % | 13 % |
+| TTFT at 33× load (queueing) | +620 % | −13 to −19 % |
+
+**Measured on the GH200 (CodeParrot-600, 4,096 blocks)**, the facts that
+matter most for scheduling:
+* **Saturation is between 20× and 33× the recorded arrival rate.** TTFT for
+  LRU: 22.5 ms at 20× (no queue), 1,815 ms at 33× (queueing).
+* **A cache hit saves little on a 1B model.** A prefill step is about 10.8 ms
+  plus 0.6 ms per 1,000 new tokens. UniCache's +2.8 pp hit ratio bought no TTFT
+  (26.5 ms vs 22.5 ms at 20×; that GPU gap is unexplained).
+* **Decode steps grow with batch:** 2.3 ms at 1–4 sequences, 3.9 ms at 25–32.
+
+**Agent with a TTFT objective** (CodeParrot-600, 25× load, tune/eval slices
+of 600 sessions, ran once). The agent stopped after 5 submissions and kept
+the unchanged LRU. Three causes:
+1. The objective was noisy (±10–40 %). That calibration (v4) charged measured
+   laptop CPU time, which v8 replaced with deterministic per-call charges.
+2. +1–4 pp of hit ratio is worth about 5 % of TTFT here.
+3. Running the policy in a sandboxed process costs about 30 ms (+45 %) of TTFT
+   per run, versus built-in policies, so agent policies start behind.
+
+**Where these files are.** H1 is on `experiment/agent-budget-v1` (results in
+`result/agent-cache-budget-study/`). H2 v1 is on `experiment/sim2real-subset`.
+The sim2real pre-registration and scripts are on this branch. The GH200 run
+log, calibrations v0–v8 and the TTFT-objective runner are in the calibration
+work, which is not on this branch yet (see above).
+
 ## 1. Question
 
 If a coding agent can change the request scheduler, alone or together with
@@ -146,15 +303,19 @@ artifact.
 charges prefill by the full prompt length, ignoring cached tokens, and charges
 a flat 10 ms per decode step. Under it, every eviction policy had *identical*
 TTFT (`docs/aic-timing.md`, "First results"). Run scheduling experiments with
-`--simulator-timing aic` (aiconfigurator step tables). Those tables are **not
-calibrated yet**, so label results "uncalibrated aic timing" until the
-calibration work lands.
+`--simulator-timing aic` (aiconfigurator step tables). Use the GH200 v8
+calibration (`--simulator-timing-calibration calibrations/gh200-llama-3.2-1b-v8.json`)
+once the calibration work lands. Until then, label results "uncalibrated aic
+timing".
 
 **4.2 There must be a queue.** At the recorded arrival rate (Poisson, 1
 session/s) the traces barely load one GPU. The waiting queue is almost always
 0 or 1 deep, so order is irrelevant. Use `--arrival-scale` (multiplies first-
-turn arrival times; `0.1` = 10× load). From the load sweep: CodeParrot with
-8B shapes on A100 tables saturates near 10×; Llama-3.2-1B on H100 tables only
+turn arrival times; `0.1` = 10× load). Measured on a GH200, CodeParrot-600
+with the 1B model saturates between 20× and 33× (LRU TTFT 22.5 ms at 20×,
+1,815 ms at 33×; section 0.5). The 25× load (`0.04`) used for the TTFT agent
+run is a reasonable first guess. Uncalibrated tables differ: with 8B shapes
+on A100 tables CodeParrot saturates near 10×, and with 1B on H100 tables only
 near 100×. Before any agent run, sweep the load with FCFS and pick one load
 **at or just below saturation**, where the queue is often ≥ 2 deep but TTFT
 is not dominated by unbounded backlog. Record the queue-depth distribution
@@ -177,6 +338,25 @@ submission whose tune p99 TTFT exceeds FCFS's by more than a fixed factor,
 chosen once and written down).
 
 ## 5. Proposed design
+
+One engine step with the proposed hooks. Dashed boxes are new, and everything
+else exists today:
+
+```mermaid
+flowchart TB
+    A["Simulator releases arrived requests into scheduler.waiting"] --> B{"len(waiting) >= 2<br/>and policy defines schedule()?"}
+    B -- no --> D
+    B -- yes --> C["NEW: flush events, call policy.schedule(context)<br/>in the sandboxed worker, host checks it is an exact<br/>permutation, then reorders waiting"]
+    C --> D["_schedule_prefills: walk waiting in order,<br/>native feasibility checks (token budget, max_num_seqs, can_allocate),<br/>stop at the first request that does not fit"]
+    D --> E{"any prefill admitted?"}
+    E -- yes --> G["Run the step (prefills only)"]
+    E -- no --> F["_schedule_running: decodes, if out of blocks, preempt"]
+    F --> P["NEW: victim = policy.preempt(context)<br/>(native: newest running request)"]
+    P --> G
+    G --> H["Step timing advances the clock,<br/>events go to the worker, evict() as today"]
+    style C stroke-dasharray: 5 5
+    style P stroke-dasharray: 5 5
+```
 
 ### 5.1 Interface: two optional callbacks in the same v2 `policy.py`
 
@@ -328,6 +508,20 @@ for sim2real.
 * **P7, sim2real.** The same scheduler code runs on GPU, so a policy can be
   replayed there unchanged. But GPU timing differs from uncalibrated `aic`
   tables, so a TTFT gain needs the sim2real check before it is claimed.
+* **P8, the sandbox costs time.** Each call into the sandboxed policy
+  process is an IPC round trip. v8 charges about 0.03 ms per call. With
+  eviction alone, the sandboxed policy added about 30 ms (+45 %) of TTFT at
+  25× load in the TTFT agent run. A `schedule` call on every engine step adds
+  more. So report two comparisons, as the TTFT agent run did:
+  * against built-in FCFS: what a deployment would see;
+  * against the FCFS reference policy running through the same sandbox:
+    decision quality at equal overhead.
+
+  Calling only when `len(waiting) >= 2` (5.2) matters here.
+* **P9, little prefill to save on a 1B model.** On the GH200 a prefill step
+  is about 10.8 ms plus 0.6 ms per 1,000 new tokens. Orderings that only raise
+  the hit ratio therefore move TTFT little. Gains should come from queueing:
+  which request waits, and for how long, near saturation.
 
 ## 8. Later extensions
 
