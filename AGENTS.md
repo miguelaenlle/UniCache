@@ -2,7 +2,7 @@
 
 Shared context for every team member's coding agent (Claude Code, Codex, …).
 Read this first, then the doc linked for the area you work on. Last updated
-2026-11-25. When a fact here disagrees with the code or a newer doc, trust the
+2026-11-26. When a fact here disagrees with the code or a newer doc, trust the
 code and fix this file.
 
 CS 498 research project: Miguel Aenlle, Albert Bogdan, Josef Hiller, Danh
@@ -62,11 +62,12 @@ UniCache on tune), with Bélády OPT as the upper bound.
 | 1 | Reproduce results in a simulator that yields TTFT/ITL, so we report full serving metrics | Miguel | Prototype on `experiment/aic-timing` (`docs/aic-timing.md`). The timing tables are not calibrated yet. |
 | 2 | Tune (calibrate) the simulator | Miguel | Planned for GH200 on NCSA DeltaAI (`docs/gh200-calibration-plan.md`) |
 | 3 | Sim2real transfer testing | Miguel | Simulator predictions pre-registered. GPU runs pending, ALFRED first (`docs/sim2real-results.md`). |
-| 4 | Online serving and adaptation: re-adapt the policy as the workload shifts, every few hours | Teammate | Can start now on the simulator. TTFT/ITL from (1) can be added later. |
-| 5 | RSI framing: recursive improvement of the serving system, or of the agent itself (it keeps optimization experience from online runs) | Unassigned | Not started |
+| 4 | Online policy development: the agent re-adapts the policy as the workload shifts, every few hours | Teammates | Can start now on the simulator. TTFT/ITL from (1) can be added later. |
+| 5 | RSI framing: recursive improvement of the serving system, or of the agent itself | Teammates: experiential learning (the agent keeps and reuses optimization experience from the online runs in item 4). The rest of the framing is unassigned. | Not started |
+| 6 | Switch the agent's objective from KV hit ratio to TTFT, then the end-to-end loop: the agent develops a policy on a trace slice, its policy is replayed on the GH200, and the TTFT result is quantified | Miguel | After (1)–(3) |
 
 Items 1–3 need GPU access and touch the simulator core (`vllm/simulator/`,
-`vllm/core/`). If you are working on item 4 or 5, don't change those files
+`vllm/core/`). If you are working on items 4 or 5, don't change those files
 without coordinating with Miguel. Build on the interfaces below.
 
 ## Where things are
