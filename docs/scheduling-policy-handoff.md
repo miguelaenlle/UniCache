@@ -139,15 +139,23 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    H1["H1: agent vs heuristics, hit ratio<br/>5 traces x 4 cache sizes, simulator<br/>(done, report Table 2)"]
-    H2["H2 v1: sim vs A100, 485 requests, 512 blocks<br/>(done, report Tables 3-4)"]
-    AIC["Latency in the simulator: aiconfigurator step tables<br/>+ TTFT/ITL metrics + load sweep (done, uncalibrated)"]
-    PRE["Sim2real transfer test: subsets + cache sizes<br/>with real contention, pre-registered (done)"]
-    GPU["GH200 runs on DeltaAI: ALFRED done,<br/>CodeParrot 3 of 4 policies, ShareGPT not run"]
-    CAL["GH200 timing calibration v0-v8<br/>(v8 final: fit on a synthetic sweep, validated on traces)"]
-    ST3["Agent with a TTFT objective, CodeParrot-600 at 25x load<br/>(ran once: no improvement found)"]
-    SCH["Scheduling-policy agent<br/>(this doc: not started)"]
-    H1 --> H2 --> AIC --> PRE --> GPU --> CAL --> ST3 --> SCH
+    subgraph R1["Done: hit ratio"]
+        direction LR
+        H1["H1: agent vs heuristics<br/>5 traces x 4 cache sizes, sim<br/>(report Table 2)"]
+        H2["H2 v1: sim vs A100<br/>485 requests, 512 blocks<br/>(report Tables 3-4)"]
+        PRE["Sim2real transfer test<br/>subsets with real contention,<br/>sim results pre-registered"]
+        GPU["GH200 runs (DeltaAI)<br/>ALFRED done, CodeParrot 3/4,<br/>ShareGPT not run"]
+        H1 --> H2 --> PRE --> GPU
+    end
+    subgraph R2["Done or started: latency"]
+        direction LR
+        AIC["Latency in the sim<br/>aiconfigurator tables,<br/>TTFT/ITL, load sweep"]
+        CAL["GH200 calibration v0-v8<br/>(v8 final, fit on a<br/>synthetic sweep)"]
+        ST3["Agent with TTFT objective<br/>CodeParrot-600, 25x load<br/>(no gain found)"]
+        SCH["Scheduling-policy agent<br/>(this doc, not started)"]
+        AIC --> CAL --> ST3 --> SCH
+    end
+    R1 --> R2
     style SCH stroke-dasharray: 5 5
 ```
 
