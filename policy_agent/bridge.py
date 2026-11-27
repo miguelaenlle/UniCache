@@ -27,6 +27,12 @@ def profile(read_paths, writable=None, network=False):
     return '\n'.join(rules)
 
 
+# Per-process totals of policy-worker traffic, read by the simulator around each engine step
+# (vllm/simulator/simulator.py) to charge policy cost deterministically: IPC calls and events are
+# counts, and cpu_ms is the worker's own process time.
+COUNTERS = {'calls': 0, 'events': 0, 'cpu_ms': 0.0}
+
+
 class PolicyFailure(RuntimeError):
     pass
 
@@ -96,6 +102,8 @@ class Remote:
             if not line:
                 raise PolicyFailure('Policy worker startup/exit error: ' + self.process.stderr.read(8192))
             result = json.loads(line)
+            COUNTERS['calls'] += 1
+            COUNTERS['cpu_ms'] += float(result.get('cpu_ms') or 0.0)
             if 'error' in result:
                 raise PolicyFailure(result['error'] + '\n' + result.get('traceback', ''))
             return result.get('result')
@@ -136,6 +144,7 @@ class ControlledEvictor:
 
     def flush(self, choose):
         from vllm.simulator.timer_utils import engine_time
+        COUNTERS['events'] += len(self.events)
         result = self.remote.call({'events': self.events, 'choose': choose,
                                    'now': engine_time()})
         self.events = []

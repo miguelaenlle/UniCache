@@ -64,9 +64,12 @@ def agent_policy(workload: str) -> Path:
     directory holding <base workload>.py copies (see make_bundle.py)."""
     import json
     import os
-    s = spec(workload)
     if os.environ.get("SIM2REAL_AGENT_DIR"):
-        return Path(os.environ["SIM2REAL_AGENT_DIR"]) / f"{s['base']}.py"
+        # Known workloads map variants to their base ("codeparrot@600" -> codeparrot.py);
+        # synthetic sweep workloads (not in WORKLOADS) use their own name.
+        base = workload.partition("@")[0]
+        return Path(os.environ["SIM2REAL_AGENT_DIR"]) / f"{base}.py"
+    s = spec(workload)
     rec = json.loads((STUDY / f"agent-runs/{s['agent_blocks']}/{s['base']}.json").read_text())
     run = AGENT_RUNS / Path(rec["run"]).name
     return run / "internal" / f"submission-{int(rec['selected']):04d}" / "policy.py"
@@ -102,4 +105,11 @@ def replay_command(python, workload, blocks, policy, run_dir, mode="sim",
         cmd += ["--opt-block-use-map-path", str(use_map)]
     if step_log is not None:
         cmd += ["--simulator-step-log", str(step_log)]
+    # Optional extra replay flags, e.g. the timing model for step 1 of the TTFT work:
+    #   SIM2REAL_EXTRA_FLAGS="--simulator-timing aic --simulator-aic-system h100_sxm
+    #     --simulator-timing-calibration calibrations/gh200-llama-3.2-1b-v0.json"
+    # They are recorded in each run's command.json.
+    import os
+    import shlex
+    cmd += shlex.split(os.environ.get("SIM2REAL_EXTRA_FLAGS", ""))
     return cmd

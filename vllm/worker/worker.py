@@ -563,6 +563,16 @@ def raise_if_cache_size_invalid(num_gpu_blocks, block_size, is_attention_free,
                          "initializing the engine.")
     max_seq_len = block_size * (num_gpu_blocks // pipeline_parallel_size)
     if not is_attention_free and max_model_len > max_seq_len:
+        # sim2real GPU replays cap the KV cache with --simulator-num-gpu-blocks
+        # while keeping H1's --max-model-len 131072 (which also sets the default
+        # max_num_batched_tokens), so the GPU schedules exactly like the CPU
+        # simulator, which never runs this check. A request that can never fit
+        # is then ignored by the scheduler, as in the simulator.
+        if os.environ.get("UNICACHE_ALLOW_SMALL_KV_CACHE") == "1":
+            logger.warning(
+                "max_model_len %d > KV cache capacity %d tokens; allowed by "
+                "UNICACHE_ALLOW_SMALL_KV_CACHE=1", max_model_len, max_seq_len)
+            return
         raise ValueError(
             f"The model's max seq len ({max_model_len}) "
             "is larger than the maximum number of tokens that can be "

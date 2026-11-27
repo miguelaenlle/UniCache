@@ -1,0 +1,17 @@
+# Layer on top of unicache-lite-3.sif: pin every package the container shares with
+# requirements/simulator-local.lock (the working local simulator env) to the lock's version.
+# vLLM 0.8.5's requirements give only lower bounds, so a fresh build pulled e.g.
+# transformers 5.x, which breaks vLLM's tokenizer wrapper (all_special_tokens_extended).
+#   apptainer build --fakeroot unicache-lite-4.sif unicache-lite-pin.def
+Bootstrap: localimage
+From: /work/hdd/bcjw/maenlle2/kvcal/sif/unicache-lite-3.sif
+
+%files
+    pins-from-simulator-lock.txt /opt/pins-from-simulator-lock.txt
+
+%post
+    /opt/venv/bin/pip install --no-cache-dir --no-deps --only-binary=:all: -r /opt/pins-from-simulator-lock.txt
+    rm -rf /root/.cache
+
+%test
+    /opt/venv/bin/python -c "import transformers, tokenizers; assert transformers.__version__ == '4.53.2', transformers.__version__; print('pinned ok', transformers.__version__, tokenizers.__version__)"

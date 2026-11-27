@@ -1,0 +1,104 @@
+{
+  "scale": {
+    "prefill": 1.4156938565114268,
+    "decode": 3.103569626616572
+  },
+  "overhead_ms": {
+    "prefill": 4.749642920394725,
+    "decode": -2.1477233617167597
+  },
+  "fit": {
+    "model": "/Users/miguel/Documents/Agentic-KV-Eviction/UniCache/models/Llama-3.2-1B-Instruct",
+    "system": "h100_sxm",
+    "aic_backend_version": "0.24.0",
+    "steps": [
+      "result/sim2real-transfer/gpu-sweep/sweep-pre2048-s0/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-rps10/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-dec16-c2048/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-dec1-c2048/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-dec32-c256/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-rps20/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-dec32-c2048/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-pre512-s0/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-evict/512/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-rps2/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-rps5/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-pre2048-s90/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-pre8192-s0/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-dec8-c256/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-dec8-c2048/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-rps40/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-dec16-c256/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-pre2048-s50/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-pre128-s0/16384/LRU/steps.csv",
+      "result/sim2real-transfer/gpu-sweep/sweep-dec1-c256/16384/LRU/steps.csv"
+    ],
+    "phases": {
+      "prefill": {
+        "train_rows": 814,
+        "test_rows": 238,
+        "train_aic_ms_range": [
+          1.840640979616359,
+          224.65234753573827
+        ],
+        "train_measured_ms_p50_p99": [
+          8.642224536743015,
+          50.45198874315247
+        ],
+        "train_batch_max": 32,
+        "test_error_uncalibrated": {
+          "mape": 0.6624206176695808,
+          "median_ape": 0.6723970033817466,
+          "p90_ape": 0.7597386185948276,
+          "mean_bias_ms": -7.03150852714824
+        },
+        "test_error_calibrated": {
+          "mape": 0.09812843079340781,
+          "median_ape": 0.05651482961210896,
+          "p90_ape": 0.2335280151026462,
+          "mean_bias_ms": -0.318731458287462
+        }
+      },
+      "decode": {
+        "train_rows": 35787,
+        "test_rows": 9150,
+        "train_aic_ms_range": [
+          1.388402418774316,
+          2.2686464091076606
+        ],
+        "train_measured_ms_p50_p99": [
+          2.2153910249471664,
+          4.469211660325526
+        ],
+        "train_batch_max": 32,
+        "test_error_uncalibrated": {
+          "mape": 0.37656131058254744,
+          "median_ape": 0.3549315373121368,
+          "p90_ape": 0.46922985090895697,
+          "mean_bias_ms": -0.947647486749087
+        },
+        "test_error_calibrated": {
+          "mape": 0.07926106588777825,
+          "median_ape": 0.07952867186423357,
+          "p90_ape": 0.12132476692550914,
+          "mean_bias_ms": -8.531338723217684e-05
+        }
+      }
+    },
+    "source": "synthetic sweep only (scripts/sim2real/make_sweep.py); traces held out",
+    "policy": {
+      "gpu_extra_ms_total": 98.960374831222,
+      "ipc_calls": 2728.0,
+      "worker_cpu_ms_total": 11.048000000000275,
+      "policy_call_ms": 0.03222594385308714,
+      "gpu_steps_lru": 5078,
+      "gpu_steps_agent": 4931
+    }
+  },
+  "cpu_scale": {
+    "prefill": 0.0,
+    "decode": 0.0
+  },
+  "policy_call_ms": 0.03222594385308714,
+  "policy_cpu_scale": 1.0
+}

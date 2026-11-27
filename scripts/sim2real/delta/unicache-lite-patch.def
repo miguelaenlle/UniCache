@@ -1,0 +1,21 @@
+# Layer on top of unicache-lite.sif (saves a 40-min recompile):
+#  1. vllm/triton_utils/importing.py whose Triton placeholder has a __spec__. aarch64 has no
+#     Triton 3.2 wheels; without the spec torch.cuda's lazy init raises
+#     "triton.__spec__ is None".
+#  2. The UniCache simulator's own dependencies, which vLLM's requirements lack
+#     (versions from requirements/simulator-local.lock).
+#   apptainer build --fakeroot unicache-lite-3.sif unicache-lite-patch.def
+Bootstrap: localimage
+From: /work/hdd/bcjw/maenlle2/kvcal/sif/unicache-lite.sif
+
+%files
+    patches/importing.py /opt/unicache/vllm/triton_utils/importing.py
+
+%post
+    /opt/venv/bin/pip install --no-cache-dir pandas==2.3.3 matplotlib==3.10.9 ijson==3.6.0
+    rm -rf /root/.cache
+
+%test
+    test -s /opt/unicache/vllm/_C.abi3.so
+    grep -q 'ModuleSpec("triton", None)' /opt/unicache/vllm/triton_utils/importing.py
+    /opt/venv/bin/python -c "import torch, pandas, matplotlib, ijson; print(torch.__version__, 'patched ok')"

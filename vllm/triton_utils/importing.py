@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.machinery
 import sys
 import types
 from importlib.util import find_spec
@@ -25,6 +26,12 @@ if not HAS_TRITON:
 
         def __init__(self):
             super().__init__("triton")
+            # torch.cuda's lazy init calls importlib.util.find_spec("triton"),
+            # which raises ValueError for a module whose __spec__ is None. A
+            # bare spec lets it pass; torch's real probe (has_triton_package)
+            # imports triton.compiler, which this placeholder lacks, so torch
+            # still sees no Triton. Needed on aarch64 (no Triton 3.2 wheels).
+            self.__spec__ = importlib.machinery.ModuleSpec("triton", None)
             self.jit = self._dummy_decorator("jit")
             self.autotune = self._dummy_decorator("autotune")
             self.heuristics = self._dummy_decorator("heuristics")
@@ -47,6 +54,8 @@ if not HAS_TRITON:
 
         def __init__(self):
             super().__init__("triton.language")
+            self.__spec__ = importlib.machinery.ModuleSpec(
+                "triton.language", None)
             self.constexpr = None
             self.dtype = None
 

@@ -5,6 +5,7 @@ import json
 import linecache
 import resource
 import sys
+import time
 import traceback
 
 resource.setrlimit(resource.RLIMIT_CPU, (600, 600))
@@ -27,11 +28,13 @@ except BaseException as error:
 for line in sys.stdin:
     try:
         message = json.loads(line)
+        cpu_start = time.process_time()
         with contextlib.redirect_stdout(io.StringIO()):
             for event in message['events']:
                 policy.on_event(event)
             result = policy.evict(message['now']) if message['choose'] else None
-        print(json.dumps({'result': result}), flush=True)
+        cpu_ms = (time.process_time() - cpu_start) * 1000.0
+        print(json.dumps({'result': result, 'cpu_ms': cpu_ms}), flush=True)
     except BaseException as error:
         print(json.dumps({'error': type(error).__name__ + ': ' + str(error),
                           'traceback': traceback.format_exc()}), flush=True)

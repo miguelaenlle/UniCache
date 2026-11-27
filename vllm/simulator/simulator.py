@@ -293,9 +293,18 @@ class Simulator:
             self._check_future_requests()
             # Step 2: if there are unfinished requests, step the engine
             if self.engine.has_unfinished_requests():
+                from policy_agent.bridge import COUNTERS as _policy
+                from vllm.simulator.cache_stats import CACHE_STATS as _cache
+                calls0, events0, pcpu0 = _policy['calls'], _policy['events'], _policy['cpu_ms']
+                evict0 = _cache['evictions']
+                # Queue depth the scheduler sees while building this step.
+                step_waiting = sum(len(s.waiting) for s in self.engine.scheduler)
                 wall_start = time.perf_counter()
                 request_outputs = self.engine.step()
                 measured_ms = (time.perf_counter() - wall_start) * 1000.0
+                policy_step = (_policy['calls'] - calls0, _policy['events'] - events0,
+                               _policy['cpu_ms'] - pcpu0)
+                step_evictions = _cache['evictions'] - evict0
                 batch = StepBatch.from_metadata(
                     getattr(self.engine, "last_scheduled_metadata", []),
                     self.args.block_size)
@@ -304,7 +313,11 @@ class Simulator:
                 # Advance virtual clock by Δt for this step
                 if GLOBAL_SIMULATOR_CONFIG.simulator_enable_virtual_time:
                     if model_ms is not None:
-                        GLOBAL_TIMER.advance(model_ms / 1000.0)
+                        cal = self.step_timing.calibration
+                        cpu_charge = (cal.cpu_charge(batch.phase, measured_ms) +
+                                      cal.policy_charge(policy_step[0], policy_step[2]) +
+                                      cal.engine_charge(batch.phase, step_evictions, step_waiting))
+                        GLOBAL_TIMER.advance((model_ms + cpu_charge) / 1000.0)
                     else:
                         self._advance_legacy_timing(request_outputs)
                 self.latency.on_step(request_outputs,
@@ -314,7 +327,9 @@ class Simulator:
                     self.step_log.write(
                         self.get_time() - self.start_time, batch, model_ms,
                         None if GLOBAL_SIMULATOR_CONFIG.
-                        simulator_enable_virtual_time else measured_ms)
+                        simulator_enable_virtual_time else measured_ms,
+                        cpu_ms=measured_ms, policy=policy_step,
+                        engine=(step_evictions, step_waiting))
                 # For each output, if finished, schedule next turn (if any)
                 for output in request_outputs:
                     if isinstance(output, RequestOutput):
@@ -396,6 +411,16 @@ class Simulator:
                 params=req.params,
                 conv_key=req.conv_key,
             )
+            if (self.step_timing is not None
+                    and GLOBAL_SIMULATOR_CONFIG.simulator_enable_virtual_time):
+                cal = self.step_timing.calibration
+                if cal.request_ms:
+                    n = 0
+                    for sched in self.engine.scheduler:
+                        if sched.waiting and sched.waiting[-1].request_id == req.request_id:
+                            n = sched.waiting[-1].seqs[0].get_prompt_len()
+                            break
+                    GLOBAL_TIMER.advance(cal.request_charge(n) / 1000.0)
             logger.debug(f"[Simulator] Engine Add request {req.request_id} "
                          f"(ts={ts:.2f}, global_time={self.get_time():.2f}) "
                          f"Decode len: {req.params.max_tokens}")

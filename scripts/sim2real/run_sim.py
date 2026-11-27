@@ -34,11 +34,16 @@ def run(workload, blocks, policy, out, use_map=None, mode="sim", rep=0, block_si
     done = sorted(run_dir.glob("*/summary.json"))
     if not done:
         run_dir.mkdir(parents=True, exist_ok=True)
-        step_log = run_dir / "steps.csv" if mode == "gpu" else None
+        step_log = run_dir / "steps.csv" if (mode == "gpu" or os.environ.get("SIM2REAL_STEP_LOG")) else None
         # The subset's task config, with its data path resolved on this machine.
         tasks = yaml.safe_load((SUBSETS / workload / "eval.yaml").read_text())
+        scale = float(os.environ.get("SIM2REAL_ARRIVAL_SCALE", "1"))
         for task in tasks["tasks"]:
             task["data_path"] = str(SUBSETS / workload / "eval.jsonl")
+            if scale != 1.0:
+                # Load knob (same as policy_agent --arrival-scale): multiply first-turn
+                # arrivals; follow-up turns keep their completion-relative think times.
+                task["frozen_arrivals"] = {k: v * scale for k, v in task["frozen_arrivals"].items()}
         (run_dir / "tasks_config.yaml").write_text(yaml.safe_dump(tasks, sort_keys=False))
         cmd = replay_command(sys.executable, workload, blocks, policy, run_dir, mode,
                              use_map, step_log, block_size, run_dir / "tasks_config.yaml")

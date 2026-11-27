@@ -1,0 +1,67 @@
+# Trimmed Apptainer image for the sim2real hit-ratio replays on GH200 (aarch64, sm_90).
+# Same base, torch and fork source as unicache.def, but it compiles only what a bf16
+# Llama replay on the V0 engine uses:
+#   * vllm._C without the Hopper-only CUTLASS/quantization kernels (machete,
+#     scaled_mm_c3x sm90, sparse, grouped_mm). These are what OOM-killed the full build.
+#   * FlashAttention 2 (vllm_flash_attn._vllm_fa2_C). xformers is x86-only.
+# Skipped: _moe_C, _flashmla_C, FA3, cumem_allocator (all imported inside try blocks).
+# Attention runs on FA2 (VLLM_FLASH_ATTN_VERSION=2). That does not change hit ratios,
+# but it is slower than FA3 on Hopper, so use the full unicache.def for timing calibration.
+# Small enough to build on a DeltaAI login node (16 CPUs, 16 GiB soft memory cap):
+#   APPTAINER_TMPDIR=/tmp/$USER-build MAX_JOBS=4 apptainer build --fakeroot unicache-lite.sif unicache-lite.def
+Bootstrap: docker
+From: nvidia/cuda:12.6.3-devel-ubuntu24.04
+
+%files
+    unicache-src.tar.gz /opt/unicache-src.tar.gz
+
+%environment
+    export PATH=/opt/venv/bin:$PATH
+    export VLLM_USE_V1=0 HF_HUB_OFFLINE=1 VLLM_NO_USAGE_STATS=1 TOKENIZERS_PARALLELISM=false
+    export PYTHONHASHSEED=0 MPLBACKEND=Agg
+    export VLLM_FLASH_ATTN_VERSION=2 UNICACHE_IMAGE=lite
+
+%post
+    set -e
+    apt-get update
+    apt-get install -y --no-install-recommends python3 python3-venv python3-dev \
+        build-essential cmake ninja-build git ccache util-linux numactl
+    python3 -m venv /opt/venv
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip
+    /opt/venv/bin/pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 \
+        --index-url https://download.pytorch.org/whl/cu126
+    mkdir -p /opt/unicache
+    tar -xzf /opt/unicache-src.tar.gz -C /opt/unicache
+    rm /opt/unicache-src.tar.gz
+    cd /opt/unicache
+    sed -i '/^torchaudio/d;/^ray\[/d' requirements/cuda.txt
+    # Trim 1: no Hopper-only (9.0a) kernels. 10.0a never matches a 9.0 target.
+    sed -i 's/"9\.0a;"/"10.0a;"/; s/"9\.0a"/"10.0a"/' CMakeLists.txt
+    test "$(grep -c '"9\.0a' CMakeLists.txt)" = 0
+    # Trim 2: build only the _C and FA2 extensions.
+    /usr/bin/python3 - <<'EOF'
+import re
+p = "setup.py"; s = open(p).read()
+for name in ["vllm._moe_C", "vllm.vllm_flash_attn._vllm_fa3_C", "vllm.cumem_allocator"]:
+    s, n = re.subn(r'ext_modules\.append\(\s*CMakeExtension\(name="%s"\)\)' % re.escape(name), "pass", s)
+    assert n == 1, name
+s, n = re.subn(r'ext_modules\.append\(\s*CMakeExtension\(name="vllm\._flashmla_C", optional=True\)\)', "pass", s)
+assert n == 1, "flashmla"
+open(p, "w").write(s)
+EOF
+    grep -n 'CMakeExtension(name=' setup.py
+    /opt/venv/bin/pip install --no-cache-dir -r requirements/build.txt
+    /opt/venv/bin/pip install --no-cache-dir "cmake<4"
+    export SETUPTOOLS_SCM_PRETEND_VERSION=0.1.dev22
+    export TORCH_CUDA_ARCH_LIST="9.0" VLLM_TARGET_DEVICE=cuda MAX_JOBS=${MAX_JOBS:-4}
+    /opt/venv/bin/pip install --no-cache-dir --no-build-isolation -e .
+    /opt/venv/bin/pip install --no-cache-dir pyyaml
+    ls -la vllm/*.so vllm/vllm_flash_attn/*.so
+    apt-get clean && rm -rf /var/lib/apt/lists/* /root/.cache
+
+%test
+    # Must pass on a login node with no GPU driver: importing vllm._C needs libcuda.so.1,
+    # so only check that the compiled libraries exist. The smoke job imports them on a GPU.
+    test -s /opt/unicache/vllm/_C.abi3.so
+    test -s /opt/unicache/vllm/vllm_flash_attn/_vllm_fa2_C.abi3.so
+    /opt/venv/bin/python -c "import torch; print(torch.__version__, 'lite files ok')"

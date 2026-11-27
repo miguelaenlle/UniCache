@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure real prefill/decode step times on a GPU over a controlled grid.
 
-UNTESTED until run on a GPU (written 2026-11-23 without one). Output columns
+First GPU run: DeltaAI GH200, 2026-11-26 (scripts/sim2real/delta/grid.sbatch). Output columns
 match ``--simulator-step-log`` so ``fit_calibration.py`` reads either.
 
 Each measurement is one ``LLM.generate`` call, so it includes the engine's
@@ -44,6 +44,10 @@ def main():
     p.add_argument("--repeats", type=int, default=5)
     p.add_argument("--decode-steps", type=int, default=32)
     p.add_argument("--quick", action="store_true")
+    p.add_argument("--load-format", default="auto",
+                   help='"dummy" when the model dir has only config + tokenizer (DeltaAI image)')
+    p.add_argument("--max-num-seqs", type=int, default=32,
+                   help="engine batch cap; 32 matches the sim2real/H1 replays")
     args = p.parse_args()
 
     from vllm import LLM, SamplingParams
@@ -55,8 +59,9 @@ def main():
     llm = LLM(model=args.model, enable_prefix_caching=True,
               enable_chunked_prefill=False, block_size=args.block_size,
               max_num_batched_tokens=args.max_num_batched_tokens,
-              max_num_seqs=256, gpu_memory_utilization=args.gpu_memory_utilization,
-              seed=0)
+              max_num_seqs=args.max_num_seqs,
+              gpu_memory_utilization=args.gpu_memory_utilization,
+              load_format=args.load_format, seed=0)
     vocab = llm.get_tokenizer().vocab_size
     rng = random.Random(0)
 
@@ -78,9 +83,10 @@ def main():
         prefill_grid = [(b, n, pre) for b in [1, 2, 4, 8, 16, 32]
                         for n in [16, 64, 256, 1024, 4096]
                         for pre in [0, 512, 2048, 8192]
-                        if b * (n + pre) <= args.max_num_batched_tokens]
-        decode_grid = [(b, c) for b in [1, 4, 16, 32, 64, 128, 256]
-                       for c in [128, 512, 2048, 8192]]
+                        if b * (n + pre) <= args.max_num_batched_tokens
+                        and b <= args.max_num_seqs]
+        decode_grid = [(b, c) for b in [1, 2, 4, 8, 16, 24, 32, 64, 128, 256]
+                       for c in [128, 512, 2048, 8192] if b <= args.max_num_seqs]
 
     generate([tokens(64)], 4)  # warm-up (CUDA graphs, allocator)
     rows = []

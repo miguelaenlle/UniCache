@@ -45,7 +45,7 @@ COUNT_FIELDS = ["num_prefill", "prefill_new_tokens", "prefill_cached_tokens",
 def load_rows(patterns, min_ms):
     rows = []
     for pattern in patterns:
-        for path in sorted(glob.glob(pattern)):
+        for path in sorted(glob.glob(pattern, recursive=True)):
             with open(path) as f:
                 for r in csv.DictReader(f):
                     if not r.get("measured_ms"):
@@ -107,6 +107,12 @@ def main():
         y = np.array([r["measured_ms"] for r in train])
         if len(train) >= 2 and np.ptp(x) > 0:
             scale, overhead = np.polyfit(x, y, 1)
+            if scale < 0:
+                # A negative slope is unphysical: it would make bigger batches
+                # faster when extrapolated to higher load. It appears when the
+                # measured steps are dominated by a flat per-step overhead (e.g.
+                # 1B model, small batches). Fall back to a constant step time.
+                scale, overhead = 0.0, float(y.mean())
         else:  # not enough spread: keep the tables, fit a constant offset
             scale, overhead = 1.0, float((y - x).mean())
         calibration["scale"][phase] = float(scale)
@@ -115,6 +121,10 @@ def main():
         ty = np.array([r["measured_ms"] for r in test])
         calibration["fit"]["phases"][phase] = {
             "train_rows": len(train), "test_rows": len(test),
+            # Coverage: the calibration is only trusted inside this range.
+            "train_aic_ms_range": [float(x.min()), float(x.max())],
+            "train_measured_ms_p50_p99": [float(np.percentile(y, 50)), float(np.percentile(y, 99))],
+            "train_batch_max": int(max(r["num_prefill"] + r["num_decode"] for r in train)),
             "test_error_uncalibrated": errors(tx, ty),
             "test_error_calibrated": errors(scale * tx + overhead, ty),
         }

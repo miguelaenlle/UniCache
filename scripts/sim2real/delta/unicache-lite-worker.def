@@ -1,0 +1,15 @@
+# Layer on top of unicache-lite-4.sif: vllm/worker/worker.py with an opt-in bypass of the
+# "max_model_len > KV cache capacity" check (UNICACHE_ALLOW_SMALL_KV_CACHE=1), so GPU replays
+# keep H1's --max-model-len 131072 (and the max_num_batched_tokens it implies) while the KV
+# cache is capped by --simulator-num-gpu-blocks, exactly like the CPU simulator.
+#   apptainer build --fakeroot unicache-lite-5.sif unicache-lite-worker.def
+Bootstrap: localimage
+From: /work/hdd/bcjw/maenlle2/kvcal/sif/unicache-lite-4.sif
+
+%files
+    patches/worker.py /opt/unicache/vllm/worker/worker.py
+
+%test
+    grep -q UNICACHE_ALLOW_SMALL_KV_CACHE /opt/unicache/vllm/worker/worker.py
+    grep -q 'ModuleSpec("triton", None)' /opt/unicache/vllm/triton_utils/importing.py
+    /opt/venv/bin/python -c "import transformers; assert transformers.__version__ == '4.53.2'; print('layer 5 ok')"

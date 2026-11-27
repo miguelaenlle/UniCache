@@ -1,0 +1,61 @@
+{
+  "linear": {
+    "prefill": {
+      "const": 7.245032017576584,
+      "per_prompt": 0.9252898957025073,
+      "per_1k_new": 1.1590696047154656,
+      "per_1k_cached": -0.0014672067587635353,
+      "per_1m_new_sq": 0.4897821864436564
+    },
+    "decode": {
+      "const": 2.1883375353835275,
+      "per_seq": 0.034541492921394544,
+      "per_1k_kv": 0.01986930954727091
+    }
+  },
+  "evict_ms": 0.057447247457968524,
+  "waiting_ms": {
+    "prefill": 0.0,
+    "decode": 0.0
+  },
+  "policy_call_ms": 0.03222594385308714,
+  "policy_cpu_scale": 1.0,
+  "cpu_scale": {
+    "prefill": 0.0,
+    "decode": 0.0
+  },
+  "scale": {
+    "prefill": 1.0,
+    "decode": 1.0
+  },
+  "overhead_ms": {
+    "prefill": 0.0,
+    "decode": 0.0
+  },
+  "fit": {
+    "source": "synthetic sweep only (scripts/sim2real/make_sweep.py); traces held out",
+    "phases": {
+      "prefill": {
+        "rows": 884,
+        "max_prompts_per_step": 4,
+        "heldout_sweep_median_err": 0.051652273008095564
+      },
+      "decode": {
+        "rows": 40009,
+        "heldout_sweep_median_err": 0.03166020917169311
+      }
+    },
+    "evict": {
+      "gpu_prefill_excess_ms": 0.8988579318923475,
+      "evictions_per_prefill_step": 15.646666666666667
+    },
+    "policy": {
+      "gpu_extra_ms_total": 98.960374831222,
+      "ipc_calls": 2728.0,
+      "worker_cpu_ms_total": 11.048000000000275,
+      "policy_call_ms": 0.03222594385308714,
+      "gpu_steps_lru": 5078,
+      "gpu_steps_agent": 4931
+    }
+  }
+}

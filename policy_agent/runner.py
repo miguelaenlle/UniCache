@@ -31,7 +31,7 @@ TRACE_CONFIGS = {
     'alfred': 'TaskData/AgentBankData/tasks_config_alfred.yaml',
     'codeparrot': 'TaskData/Codeparrot/tasks_config.yaml',
 }
-PROMPT = '''Improve policy.py to increase cache hit ratio on the tune split.
+PROMPT = '''Improve policy.py to {goal} on the tune split.
 Read policy_api.md and run_context.json. Use past and current cache information only.
 Check your policy with: python smoke_test.py
 You may write custom Python tests and run: python run_local.py tests/my_test.py
@@ -42,6 +42,8 @@ Read the feedback and history.jsonl, then iterate. You get {budget} attempts;
 accepted failures count. Eval results are hidden. Your best tune submission is kept.
 Finish early: python submit.py --done --reason "<why you are stopping>"
 '''
+GOALS = {'hit_ratio': 'increase cache hit ratio',
+         'ttft': 'reduce mean time to first token (TTFT, arrival to first token, including queueing)'}
 API = '''# Policy interface
 Implement class Policy with __init__(), on_event(event), and evict(now).
 on_event receives batches in their original order before evict is called.
@@ -135,6 +137,13 @@ def prepare(args):
     return configs, expected, manifest
 
 
+def objective_value(args, score):
+    """Higher is better for selection: hit ratio, or minus mean TTFT."""
+    if getattr(args, 'objective', 'hit_ratio') == 'ttft':
+        return -score['ttft_mean_s']
+    return score['token_weighted_hit_ratio']
+
+
 class Evaluator:
     def __init__(self, args, out, configs, expected):
         self.args, self.out, self.configs, self.expected = args, out, configs, expected
@@ -149,7 +158,7 @@ class Evaluator:
         if candidate and getattr(self.args, 'policy_interface', 'v1') == 'v2':
             from policy_agent.v2_bridge import V2Remote
             probe = V2Remote(Path(candidate).read_text(),
-                             {'api_version':2, 'capacity':self.args.gpu_blocks, 'block_size':8},
+                             {'api_version':2, 'capacity':self.args.gpu_blocks, 'block_size':self.args.block_size},
                              mode_only=True)
             try:
                 disabled_control = probe.initial['cache_mode'] == 'disabled'
@@ -170,7 +179,7 @@ class Evaluator:
             path.mkdir()
             env[var] = str(path)
         cmd = [sys.executable, '-m', 'policy_agent.replay', '--model', str(ROOT/'models/Llama-3.2-1B-Instruct'),
-               '--device', 'cpu', '--max-num-seqs', '32', '--max-model-len', '131072', '--block-size', '8',
+               '--device', 'cpu', '--max-num-seqs', '32', '--max-model-len', '131072', '--block-size', str(self.args.block_size),
                '--simulator-enable-virtual-time', '--simulator-num-gpu-blocks', str(self.args.gpu_blocks),
                '--simulator-num-cpu-blocks', '50000', '--eviction-policy', ALIASES.get(policy, policy),
                '--simulator-ttft', '3.9e-05 * (batch_size ** 0.997) * (max_len ** 1.014)',
@@ -178,6 +187,10 @@ class Evaluator:
                '--simulator-task-config', str(self.configs[split]), '--log-level', 'WARNING']
         if not disabled_control:
             cmd.append('--enable-prefix-caching')
+        if self.args.timing == 'aic':
+            cmd += ['--simulator-timing', 'aic', '--simulator-aic-system', self.args.aic_system]
+            if self.args.timing_calibration:
+                cmd += ['--simulator-timing-calibration', str(Path(self.args.timing_calibration).resolve())]
         if use_map:
             cmd += ['--opt-block-use-map-path', str(use_map)]
         write(folder/'command.json', cmd)
@@ -226,12 +239,23 @@ class Evaluator:
         prompt = sum(v[1] for v in counts.values())
         if h['global_hit_tokens_num'] != hit or h['global_tokens'] != prompt or prompt <= 0:
             raise RuntimeError('Trace correctness failed: aggregate mismatch')
-        return {'token_weighted_hit_ratio': hit/prompt, 'hit_tokens': hit,
-                'prompt_tokens': prompt, 'requests': len(expected)}, parent
+        score = {'token_weighted_hit_ratio': hit/prompt, 'hit_tokens': hit,
+                 'prompt_tokens': prompt, 'requests': len(expected)}
+        lat_path = parent/'latency_summary.json'
+        if lat_path.exists():
+            lat = json.loads(lat_path.read_text())
+            for key, name in [('ttft_s', 'ttft'), ('itl_s', 'itl'), ('e2e_s', 'e2e')]:
+                for stat in ('mean', 'p90'):
+                    value = (lat.get(key) or {}).get(stat)
+                    if value is not None:
+                        score[f'{name}_{stat}_s'] = value
+        if self.args.objective == 'ttft' and 'ttft_mean_s' not in score:
+            raise RuntimeError('TTFT objective but no latency summary was written')
+        return score, parent
 
     def artifacts(self):
         valid = [r for r in self.rows if r['status'] == 'ok']
-        best = max(valid, key=lambda r: (r['tune']['token_weighted_hit_ratio'], -r['submission'])) if valid else None
+        best = max(valid, key=lambda r: (objective_value(self.args, r['tune']), -r['submission'])) if valid else None
         if best:
             shutil.copyfile(self.out/'internal'/f"submission-{best['submission']:04d}"/'policy.py', self.out/'policy.py')
         with (self.out/'comparison.csv').open('w', newline='') as f:
@@ -341,7 +365,22 @@ def main():
     p.add_argument('--prepare-only', action='store_true', help='Build sandbox and splits without simulations or Claude')
     p.add_argument('--sessions', type=int, help='Explicit source subset override; default authors standalone limit (1000)')
     p.add_argument('--gpu-blocks', type=int, default=50000)
+    p.add_argument('--block-size', type=int, default=8, help='KV block size in tokens (sim2real GPU runs use 16)')
+    p.add_argument('--objective', choices=['hit_ratio', 'ttft'], default='hit_ratio',
+                   help='What the agent optimizes and what selects the best tune submission')
+    p.add_argument('--timing', choices=['legacy', 'aic'], default='legacy',
+                   help='Simulator step-time model; ttft needs aic (legacy charges every prefill fully)')
+    p.add_argument('--aic-system', default='h100_sxm')
+    p.add_argument('--timing-calibration', help='Calibration JSON for --timing aic (e.g. calibrations/gh200-...json)')
+    p.add_argument('--slice-sessions', type=int,
+                   help='Use only the first K sessions (by simulated start) of each split, in run-local copies')
+    p.add_argument('--arrival-scale', type=float, default=1.0,
+                   help='Multiply first-turn arrival times (<1 raises load). Applied to this run\'s own split copies')
     args = p.parse_args()
+    if args.objective == 'ttft' and args.timing != 'aic':
+        p.error('--objective ttft needs --timing aic')
+    if args.arrival_scale <= 0:
+        p.error('--arrival-scale must be positive')
     if not args.coding_model.startswith('claude:') or not args.coding_model.split(':',1)[1]:
         p.error('Only claude:<model> is supported')
     if args.max_submissions < 1 or args.gpu_blocks < 1:
@@ -369,6 +408,33 @@ def main():
     for name in ['feedback', 'requests', 'home', 'tmp', 'bin', 'tests', 'local-output']:
         (sandbox/name).mkdir(parents=True, exist_ok=True)
     (out/'internal').mkdir()
+    if args.arrival_scale != 1.0 or args.slice_sessions:
+        # Never modify the shared split files: slice and/or scale run-local copies.
+        local = out/'internal'/'splits'
+        local.mkdir()
+        for split, path in list(configs.items()):
+            tasks = yaml.safe_load(Path(path).read_text())
+            for t in tasks['tasks']:
+                arrivals = t['frozen_arrivals']
+                if args.slice_sessions:
+                    # First K sessions by simulated start, as scripts/sim2real/build_subsets.py
+                    # cuts the sim2real subsets (the eval slice equals <trace>@K there).
+                    keep = sorted(arrivals, key=lambda sid: (arrivals[sid], sid))[:args.slice_sessions]
+                    if len(keep) < args.slice_sessions:
+                        raise SystemExit(f'--slice-sessions {args.slice_sessions} exceeds the {split} split')
+                    keep_set = set(keep)
+                    data = local/f'{split}.jsonl'
+                    with open(t['data_path']) as src, data.open('w') as dst:
+                        for line in src:
+                            if next(iter(json.loads(line))) in keep_set:
+                                dst.write(line)
+                    t['data_path'], t['max_record'] = str(data), len(keep)
+                    arrivals = {sid: arrivals[sid] for sid in keep}
+                    expected[split] = {k: v for k, v in expected[split].items()
+                                       if k.split('_turn_')[0][len('id_'):] in keep_set}
+                t['frozen_arrivals'] = {k: v*args.arrival_scale for k, v in arrivals.items()}
+            configs[split] = local/f'{split}.yaml'
+            configs[split].write_text(yaml.safe_dump(tasks))
     from policy_agent.client_python import install_client_python
     install_client_python(sandbox)
     for name in ['submit.py', 'local_client.py', 'run_local.py', 'smoke_test.py']:
@@ -379,14 +445,16 @@ def main():
     else:
         shutil.copyfile(ROOT/'policy_agent/starter.py', sandbox/'policy.py')
     (sandbox/'rationale.md').write_text('Keep the starting policy unchanged.\n')
-    (sandbox/'prompt.md').write_text(PROMPT.format(budget=args.max_submissions))
+    (sandbox/'prompt.md').write_text(PROMPT.format(budget=args.max_submissions, goal=GOALS[args.objective]))
     (sandbox/'policy_api.md').write_text((ROOT/'policy_agent/v2_api.md').read_text()
                                         if args.policy_interface == 'v2' else API)
     (sandbox/'history.jsonl').touch()
     write(sandbox/'run_context.json', {'trace':args.trace, 'serving_model':args.serving_model,
           'starting_policy':args.start_policy, 'policy_interface':args.policy_interface,
           'max_submissions':args.max_submissions,
-          'block_size':8, 'gpu_blocks':args.gpu_blocks, 'cpu_blocks':50000,
+          'block_size':args.block_size, 'gpu_blocks':args.gpu_blocks, 'cpu_blocks':50000,
+          'objective':args.objective, 'timing':args.timing, 'arrival_scale':args.arrival_scale,
+          'slice_sessions':args.slice_sessions,
           'split':'50/50 by simulated session start, whole sessions, cold caches',
           'tune_requests':len(expected['tune']), 'source_session_limit':manifest['source_session_limit']})
     write(out/'run.json', {'args':vars(args), 'trace':manifest,
@@ -406,7 +474,7 @@ def main():
     if args.policy_interface == 'v2':
         from policy_agent.v2_bridge import V2Remote
         probe = V2Remote((sandbox/'policy.py').read_text(),
-                         {'api_version':2, 'capacity':args.gpu_blocks, 'block_size':8},
+                         {'api_version':2, 'capacity':args.gpu_blocks, 'block_size':args.block_size},
                          mode_only=True)
     else:
         probe = Remote((ROOT/'policy_agent/starter.py').read_text())
@@ -441,7 +509,12 @@ def main():
             raise RuntimeError(f'Required baseline {required} failed; refusing to start Claude. See baseline-results.json.')
     zero = evaluator.submit((sandbox/'policy.py').read_text(), 'Unchanged starting policy',0)
     baseline = dict(evaluator.comparisons)[args.start_policy]
-    if any(evaluator.rows[0].get(s) != baseline[s] for s in ['tune','eval']):
+    # Parity = the editable controller makes the same eviction decisions as the built-in
+    # starting policy. Compare the deterministic cache fields only: latency fields differ by
+    # design (the sandboxed controller pays IPC CPU time, and --timing aic charges measured CPU).
+    parity_keys = ('token_weighted_hit_ratio', 'hit_tokens', 'prompt_tokens', 'requests')
+    if any({k: (evaluator.rows[0].get(s) or {}).get(k) for k in parity_keys} !=
+           {k: baseline[s].get(k) for k in parity_keys} for s in ['tune','eval']):
         raise RuntimeError('Starting-controller parity failed; refusing to launch Claude')
     stop = threading.Event()
     def serve():
@@ -482,6 +555,8 @@ def main():
                     text = f"Submission {n}: {row['status'].replace('_',' ').upper()}\n"
                     if 'tune' in row:
                         h = row['tune']
+                        if args.objective == 'ttft':
+                            text += f"Tune mean TTFT: {h['ttft_mean_s']*1000:.2f} ms (p90 {h.get('ttft_p90_s', float('nan'))*1000:.2f} ms)\n"
                         text += f"Tune hit ratio: {h['token_weighted_hit_ratio']:.2%}\nHit tokens: {h['hit_tokens']:,} / {h['prompt_tokens']:,}\nRequests: {h['requests']:,}\n"
                     if 'error' in row:
                         text += '\n'+row['error']+'\n'

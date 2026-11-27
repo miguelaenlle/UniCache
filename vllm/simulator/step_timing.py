@@ -133,6 +133,31 @@ class Calibration:
         "prefill": 1.0, "decode": 1.0, "mixed": 1.0})
     overhead_ms: Dict[str, float] = field(default_factory=lambda: {
         "prefill": 0.0, "decode": 0.0, "mixed": 0.0})
+    # Optional: charge this fraction of the simulator's own measured CPU time
+    # per engine step (scheduler, block manager and eviction-policy calls) on
+    # the virtual clock. On the GPU that CPU work is on the critical path; the
+    # kernel tables omit it. Absent from a calibration JSON -> 0 (no change).
+    cpu_scale: Dict[str, float] = field(default_factory=lambda: {
+        "prefill": 0.0, "decode": 0.0, "mixed": 0.0})
+    # Optional deterministic policy cost (sandboxed agent policies): milliseconds per IPC call
+    # to the policy worker, and a factor on the worker's own process CPU time.
+    policy_call_ms: float = 0.0
+    policy_cpu_scale: float = 0.0
+    # Optional engine-side costs the kernel tables omit (fitted from the synthetic sweep):
+    # ms per cached block evicted during the step (block-manager CPU), and ms per request
+    # still waiting in the scheduler queue during the step, per phase (scheduler CPU).
+    evict_ms: float = 0.0
+    waiting_ms: Dict[str, float] = field(default_factory=lambda: {
+        "prefill": 0.0, "decode": 0.0, "mixed": 0.0})
+    # Optional direct step model per phase, replacing scale * table + overhead:
+    #   prefill: const + per_prompt * prompts + per_1k_new * new/1000 + per_1k_cached * cached/1000
+    #            + per_1m_new_sq * sum(new_i^2)/1e6   (attention grows with prompt length squared)
+    #   decode:  const + per_seq * sequences + per_1k_kv * context_tokens/1000
+    linear: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # Optional per-request arrival cost (prompt tokenization and input processing, done in the
+    # engine's thread on a real server): const + per_1k * n/1000 + per_1m_sq * (n/1000)^2 ms,
+    # n = prompt tokens. Charged on the virtual clock when the request is released.
+    request_ms: Dict[str, float] = field(default_factory=dict)
     source: str = "uncalibrated"
 
     @classmethod
@@ -144,8 +169,43 @@ class Calibration:
             data = json.load(f)
         cal.scale.update(data.get("scale", {}))
         cal.overhead_ms.update(data.get("overhead_ms", {}))
+        cal.cpu_scale.update(data.get("cpu_scale", {}))
+        cal.policy_call_ms = float(data.get("policy_call_ms", 0.0))
+        cal.policy_cpu_scale = float(data.get("policy_cpu_scale", 0.0))
+        cal.evict_ms = float(data.get("evict_ms", 0.0))
+        cal.waiting_ms.update(data.get("waiting_ms", {}))
+        cal.linear = dict(data.get("linear", {}))
+        cal.request_ms = dict(data.get("request_ms", {}))
         cal.source = path
         return cal
+
+    def cpu_charge(self, phase: str, cpu_ms: float) -> float:
+        return self.cpu_scale.get(phase, 0.0) * cpu_ms
+
+    def policy_charge(self, calls: int, worker_cpu_ms: float) -> float:
+        return self.policy_call_ms * calls + self.policy_cpu_scale * worker_cpu_ms
+
+    def engine_charge(self, phase: str, evictions: int, waiting: int) -> float:
+        return self.evict_ms * evictions + self.waiting_ms.get(phase, 0.0) * waiting
+
+    def request_charge(self, prompt_tokens: int) -> float:
+        if not self.request_ms:
+            return 0.0
+        k = prompt_tokens / 1000.0
+        return (self.request_ms.get("const", 0.0) + self.request_ms.get("per_1k", 0.0) * k
+                + self.request_ms.get("per_1m_sq", 0.0) * k * k)
+
+    def linear_ms(self, batch: "StepBatch") -> Optional[float]:
+        m = self.linear.get(batch.phase)
+        if not m:
+            return None
+        c = batch.summary()
+        return (m.get("const", 0.0) + m.get("per_prompt", 0.0) * c["num_prefill"]
+                + m.get("per_1k_new", 0.0) * c["prefill_new_tokens"] / 1000.0
+                + m.get("per_1k_cached", 0.0) * c["prefill_cached_tokens"] / 1000.0
+                + m.get("per_1m_new_sq", 0.0) * sum(n * n for n in batch.prefill_new_tokens) / 1e6
+                + m.get("per_seq", 0.0) * c["num_decode"]
+                + m.get("per_1k_kv", 0.0) * c["decode_kv_tokens"] / 1000.0)
 
     def apply(self, phase: str, raw_ms: float) -> float:
         return self.scale.get(phase, 1.0) * raw_ms + self.overhead_ms.get(
@@ -239,4 +299,7 @@ class AicStepTiming:
     def step_ms(self, batch: StepBatch) -> float:
         if batch.phase == "empty":
             return 0.0
+        direct = self.calibration.linear_ms(batch)
+        if direct is not None:
+            return direct
         return self.calibration.apply(batch.phase, self.raw_ms(batch))

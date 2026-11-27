@@ -130,7 +130,8 @@ class StepLog:
     """
     FIELDS = ["step", "t_s", "phase", "num_prefill", "prefill_new_tokens",
               "prefill_cached_tokens", "num_decode", "decode_kv_tokens",
-              "model_ms", "measured_ms"]
+              "model_ms", "measured_ms", "cpu_ms", "policy_calls", "policy_events",
+              "policy_cpu_ms", "evictions", "num_waiting"]
 
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -139,11 +140,19 @@ class StepLog:
         self._w.writeheader()
         self._n = 0
 
-    def write(self, t_s: float, batch, model_ms, measured_ms):
+    def write(self, t_s: float, batch, model_ms, measured_ms, cpu_ms=None, policy=None,
+              engine=None):
         if batch.phase == "empty":
             return
+        # cpu_ms: wall time of engine.step() in this process. In simulation it
+        # is CPU-side work only (scheduler, block manager, policy calls); in
+        # GPU replay it equals measured_ms.
         row = {"step": self._n, "t_s": t_s, "phase": batch.phase,
-               "model_ms": model_ms, "measured_ms": measured_ms}
+               "model_ms": model_ms, "measured_ms": measured_ms, "cpu_ms": cpu_ms}
+        if policy is not None:
+            row["policy_calls"], row["policy_events"], row["policy_cpu_ms"] = policy
+        if engine is not None:
+            row["evictions"], row["num_waiting"] = engine
         row.update(batch.summary())
         self._w.writerow(row)
         self._n += 1
