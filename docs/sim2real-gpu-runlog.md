@@ -534,3 +534,5 @@ could burn up to 1 hour on one part.
 23:47: ShareGPT Agent on the GPU (job 3686096, gh151, waited 13 min, ran 10 min 11 s): 11.66 % (sim 14.31 %). Agent − LRU: GPU +0.03 pp, sim +2.65 pp: the simulator's predicted gain does not appear on the GPU (does not transfer). LRU ×2 (job 3686164) submitted, limit lowered to 15 min.
 
 00:02: ShareGPT LRU rep 2 (job 3686164, gh151, ran 10 min 11 s): 11.63 % (rep 1: 11.63 %). LRU ×3 (job 3686216), last sim2real run, submitted, limit lowered to 15 min.
+
+00:21: ShareGPT LRU rep 3 (job 3686216, ran 10 min 11 s): 11.66 % (reps 1–2: 11.63 %). ShareGPT LRU noise 0.03 pp, so the transfer threshold is max(0.5, 2 × 0.03) = 0.5 pp. That was the last sim2real GPU job, and the queue is now empty. ShareGPT verdict is unchanged: Agent − LRU on the GPU is +0.03 pp (within noise), while the simulator predicted +2.65 pp, so the gain does not transfer.

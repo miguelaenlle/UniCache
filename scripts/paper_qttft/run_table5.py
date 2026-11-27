@@ -169,7 +169,8 @@ def run_trace(label, name, args, pool):
             run_dir = out / "OPT-refined"  # see refine_opt.py
         result = latest_result(run_dir)
         lat = json.loads((result / "latency_summary.json").read_text())
-        hits = json.loads((result / "summary.json").read_text())["hit_rate_summary"]
+        hits = json.loads((result / "summary.json").read_text()).get(
+            "hit_rate_summary", {"global_hit_rate": 0.0})  # NONE has no prefix cache
         rows.append({"trace": label, "policy": paper_name,
                      "paper_qttft_s": paper_value,
                      "sim_qttft_s": lat["ttft_s"]["mean"],
