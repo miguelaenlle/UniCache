@@ -19,7 +19,7 @@ log="$out/${trace#Trace}.log"
 py=.venv-sim312/bin/python
 echo "$(date +%T) $cfg $trace load x$load -> $out"
 $py scripts/paper_qttft/run_table5.py --out "$out" --load "$load" --traces "$trace" --jobs 3 "${flags[@]}" > "$log" 2>&1
-PYTHONHASHSEED=0 $py scripts/paper_qttft/refine_opt.py --opt-dir "$out/$trace/OPT" --iterations 2 >> "$log" 2>&1
+PYTHONHASHSEED=0 $py scripts/paper_qttft/refine_opt.py --opt-dir "$out/$trace/OPT" --iterations 6 >> "$log" 2>&1
 $py scripts/paper_qttft/run_table5.py --out "$out" --load "$load" --traces "$trace" --table-only "${flags[@]}" >> "$log" 2>&1
 n=${trace#Trace#}
 cp "$out/table5.md" "$out/table5-T$n.md"; cp "$out/table5.csv" "$out/table5-T$n.csv"

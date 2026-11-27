@@ -30,7 +30,13 @@ TRACE_CONFIGS = {
     'agentbank-apps': 'TaskData/AgentBankData/tasks_config.yaml',
     'alfred': 'TaskData/AgentBankData/tasks_config_alfred.yaml',
     'codeparrot': 'TaskData/Codeparrot/tasks_config.yaml',
+    # UniCache paper Table 5 mixes (multi-task); datasets missing locally (ToolBench) are dropped.
+    'hybrid-t1': 'TaskData/Hybrid/test1/tasks_config.yaml',
+    'hybrid-t2': 'TaskData/Hybrid/test2/tasks_config.yaml',
+    'hybrid-t3': 'TaskData/Hybrid/test3/tasks_config.yaml',
 }
+SERVING_MODELS = {'llama-3.2-1b-instruct': 'models/Llama-3.2-1B-Instruct',
+                  'llama-3.2-3b-instruct': 'models/Llama-3.2-3B-Instruct'}
 PROMPT = '''Improve policy.py to {goal} on the tune split.
 Read policy_api.md and run_context.json. Use past and current cache information only.
 Check your policy with: python smoke_test.py
@@ -81,10 +87,48 @@ def write(path, data):
 def prepare(args):
     trace = getattr(args, 'trace', 'sharegpt')
     config_path = ROOT / TRACE_CONFIGS[trace]
-    task = yaml.safe_load(config_path.read_text())['tasks'][0]
+    tasks = yaml.safe_load(config_path.read_text())['tasks']
+    if len(tasks) == 1:
+        return prepare_task(trace, tasks[0], args.sessions or tasks[0]['max_record'])
+    # Multi-task mix: split every task 50/50 by its own session starts, then recombine,
+    # so tune and eval each keep the mix and per-task arrival rate (tune + eval = the trace).
+    configs, expected = {}, {'tune': {}, 'eval': {}}
+    parts, dropped = {'tune': [], 'eval': []}, []
+    manifests = []
+    for task in tasks:
+        path = ROOT / task['data_path']
+        if not path.is_file():
+            # As scripts/paper_qttft/run_table5.py: configs may point at an 8B-tokenized copy we
+            # don't have; the same sessions one level up use the shared Llama-3 tokenizer.
+            path = path.parent.parent / path.name
+        if not path.is_file():
+            dropped.append(task['name'])
+            continue
+        task = dict(task, data_path=str(path.relative_to(ROOT)))
+        sub, exp, man = prepare_task(f"{trace}-{task['name']}", task, task['max_record'])
+        for split in parts:
+            parts[split] += yaml.safe_load(Path(sub[split]).read_text())['tasks']
+            if set(exp[split]) & set(expected[split]):
+                raise ValueError('Request ids collide across tasks')
+            expected[split].update(exp[split])
+        manifests.append(man)
+    store = config_path.parent / 'agent-splits' / trace
+    store.mkdir(parents=True, exist_ok=True)
+    for split, cfg_tasks in parts.items():
+        configs[split] = store / f'{split}.yaml'
+        configs[split].write_text(yaml.safe_dump({'tasks': cfg_tasks}))
+    manifest = {'trace': trace, 'source': str(config_path), 'source_sha256': digest(config_path),
+                'dropped_tasks': dropped, 'tasks': manifests,
+                'source_session_limit': sum(m['source_session_limit'] for m in manifests),
+                'split': '50/50 by session start within each task; whole sessions; independent cold caches',
+                'configs': {s: {'path': str(p), 'sha256': digest(p)} for s, p in configs.items()}}
+    write(store / 'trace.json', manifest)
+    return configs, expected, manifest
+
+
+def prepare_task(trace, task, count):
     source = (ROOT / task['data_path']).resolve()
     folder = source.parent
-    count = args.sessions or task['max_record']
     if count < 2:
         raise ValueError('At least two sessions required')
     store = folder / 'agent-splits' / trace / f'v1-{count}'
@@ -178,7 +222,7 @@ class Evaluator:
             path = folder / var
             path.mkdir()
             env[var] = str(path)
-        cmd = [sys.executable, '-m', 'policy_agent.replay', '--model', str(ROOT/'models/Llama-3.2-1B-Instruct'),
+        cmd = [sys.executable, '-m', 'policy_agent.replay', '--model', str(ROOT/SERVING_MODELS[self.args.serving_model]),
                '--device', 'cpu', '--max-num-seqs', '32', '--max-model-len', '131072', '--block-size', str(self.args.block_size),
                '--simulator-enable-virtual-time', '--simulator-num-gpu-blocks', str(self.args.gpu_blocks),
                '--simulator-num-cpu-blocks', '50000', '--eviction-policy', ALIASES.get(policy, policy),
@@ -351,7 +395,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('command', choices=['run'])
     p.add_argument('--trace', choices=list(TRACE_CONFIGS), required=True)
-    p.add_argument('--serving_model', choices=['llama-3.2-1b-instruct'], required=True)
+    p.add_argument('--serving_model', choices=list(SERVING_MODELS), required=True)
     p.add_argument('--coding_model', default='claude:opus')
     p.add_argument('--start-policy', choices=[x for x in ALL_POLICIES if x not in ('OPT', 'NONE')], default='UniCache')
     p.add_argument('--policy-interface', choices=['v1', 'v2'], default='v1',
@@ -459,7 +503,7 @@ def main():
           'tune_requests':len(expected['tune']), 'source_session_limit':manifest['source_session_limit']})
     write(out/'run.json', {'args':vars(args), 'trace':manifest,
           'git_commit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
-          'python':sys.version, 'model_checksums':{str(x.relative_to(ROOT)):digest(x) for x in (ROOT/'models/Llama-3.2-1B-Instruct').glob('*.json')},
+          'python':sys.version, 'model_checksums':{str(x.relative_to(ROOT)):digest(x) for x in (ROOT/SERVING_MODELS[args.serving_model]).glob('*.json')},
           'limitations':[('v1 retains starting-policy tracking hooks; None delegates unchanged.'
                            if args.policy_interface == 'v1' else
                            'v2 uses a fixed LRU physical scaffold; its derived metadata is ignored by the editable worker.'),
