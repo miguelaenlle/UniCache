@@ -1,0 +1,23 @@
+# Mixed workload for UniCache paper Fig. 1 / Table 1: ShareGPT + MASH-QA in one replay.
+# Each task uses the same settings as its single-task config
+# (TaskData/SharedGPT-multi-turn, TaskData/mashqa_data).
+tasks:
+  - name: ShareGPT
+    task_id: 0
+    data_path: ./TaskData/SharedGPT-multi-turn/ShareGPT_cleaned_valid_deduplicated_session_data.jsonl
+    lambda_rate: 1
+    mu: 4.15
+    sigma: 0.971
+    max_trace_duration: -1
+    seed: 42
+    max_record: 1000
+
+  - name: MASH-QA
+    task_id: 1
+    data_path: ./TaskData/mashqa_data/mashqa_session_data.jsonl
+    lambda_rate: 1
+    mu: 1.81
+    sigma: 1.092
+    max_trace_duration: -1
+    seed: 42
+    max_record: 5000
