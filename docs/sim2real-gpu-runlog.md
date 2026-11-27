@@ -532,3 +532,5 @@ could burn up to 1 hour on one part.
 23:23: ShareGPT LeCaR on the GPU (job 3686067, gh151, ran 10 min 9 s): 18.96 % (sim 16.89 %). LeCaR − LRU: GPU +7.33 pp, sim +5.24 pp: same sign, but 2.09 pp apart, outside the 0.5 pp tolerance (does not transfer in magnitude). Note the pre-registered sim numbers used untuned timing; ShareGPT's timing mismatch (H2) is the likely cause. Agent (job 3686096) submitted, limit lowered to 15 min.
 
 23:47: ShareGPT Agent on the GPU (job 3686096, gh151, waited 13 min, ran 10 min 11 s): 11.66 % (sim 14.31 %). Agent − LRU: GPU +0.03 pp, sim +2.65 pp: the simulator's predicted gain does not appear on the GPU (does not transfer). LRU ×2 (job 3686164) submitted, limit lowered to 15 min.
+
+00:02: ShareGPT LRU rep 2 (job 3686164, gh151, ran 10 min 11 s): 11.63 % (rep 1: 11.63 %). LRU ×3 (job 3686216), last sim2real run, submitted, limit lowered to 15 min.

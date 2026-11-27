@@ -556,6 +556,22 @@ class Simulator:
                 self.output_simulator.global_hit_tokens_num /
                 self.output_simulator.global_tokens
             }
+            # Token-weighted hit ratio per task (for mixed traces).
+            per_task = {}
+            osim = self.output_simulator
+            for rid, (hit, total) in osim.request_id_2_hit_count_map.items():
+                conv_key = osim.request_id_2_conv_key_map.get(rid)
+                if conv_key is None:
+                    continue
+                sid, _ = osim.parser_conv_key(conv_key)
+                task = self.session_id_2_task_name_mapping.get(sid, "unknown")
+                acc = per_task.setdefault(task, [0, 0])
+                acc[0] += hit
+                acc[1] += total
+            summary["hit_rate_summary"]["per_task"] = {
+                t: {"hit_tokens": h, "prompt_tokens": n,
+                    "hit_rate": h / n if n else 0.0}
+                for t, (h, n) in per_task.items()}
             if GLOBAL_SIMULATOR_CONFIG.enable_lmcache:
                 summary["hit_rate_summary"][
                     "lmcache_hit_token"] = self.output_simulator.lmcache_hit_token

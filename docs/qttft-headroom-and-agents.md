@@ -51,43 +51,54 @@ are read off the bar chart (≈ ±0.01); Table 1 and Table 5 values are exact.
 
 #### A1. Hit ratio (paper Fig. 1 and Table 1)
 
-KV budget: ___ blocks × 8 tokens (chosen from LRU on MASH-QA).
+KV budget: **125,000 blocks × 8 tokens (1.0M tokens)**, chosen so LRU on MASH-QA alone = 0.6305 (paper ≈ 0.63).
+Sweep, LRU on MASH-QA: 50k 0.319, 100k 0.546, 125k 0.631, 140k 0.677, 200k 0.756, 400k 0.756.
+Legacy (hit-ratio) timing, Llama-3.2-1B tokenizer. Runs: `result/paper-repro/a1/`, OPT in `result/paper-repro/a1-opt/`.
 
 | Workload | Policy | Paper hit ratio | Our hit ratio | Δ (ours − paper) |
 |---|---|---:|---:|---:|
-| MASH-QA | LRU | ≈ 0.63 | | |
-| MASH-QA | LFU | ≈ 0.69 | | |
-| MASH-QA | FIFO | ≈ 0.58 | | |
-| MASH-QA | WA | ≈ 0.63 | | |
-| MASH-QA | OPT | — | | — |
-| ShareGPT | LRU | ≈ 0.80 | | |
-| ShareGPT | LFU | ≈ 0.60 | | |
-| ShareGPT | FIFO | ≈ 0.79 | | |
-| ShareGPT | WA | ≈ 0.80 | | |
-| ShareGPT | OPT | — | | — |
-| Mixed, total | LRU | 0.5709 | | |
-| Mixed, total | LFU | 0.3732 | | |
-| Mixed, total | FIFO | 0.5469 | | |
-| Mixed, total | WA | 0.5827 | | |
-| Mixed, total | OPT | — | | — |
-| Mixed, MASH-QA part | LRU | 0.4247 | | |
-| Mixed, MASH-QA part | LFU | 0.3627 | | |
-| Mixed, MASH-QA part | FIFO | 0.4092 | | |
-| Mixed, MASH-QA part | WA | 0.5083 | | |
-| Mixed, MASH-QA part | OPT | — | | — |
-| Mixed, ShareGPT part | LRU | 0.7457 | | |
-| Mixed, ShareGPT part | LFU | 0.3858 | | |
-| Mixed, ShareGPT part | FIFO | 0.7113 | | |
-| Mixed, ShareGPT part | WA | 0.6717 | | |
-| Mixed, ShareGPT part | OPT | — | | — |
+| MASH-QA | LRU | ≈ 0.63 | 0.6305 | +0.00 |
+| MASH-QA | LFU | ≈ 0.69 | 0.6997 | +0.01 |
+| MASH-QA | FIFO | ≈ 0.58 | 0.5996 | +0.02 |
+| MASH-QA | WA | ≈ 0.63 | 0.6305 | +0.00 |
+| MASH-QA | OPT | — | 0.7562 | — |
+| ShareGPT | LRU | ≈ 0.80 | 0.8284 | +0.03 |
+| ShareGPT | LFU | ≈ 0.60 | 0.8121 | +0.21 |
+| ShareGPT | FIFO | ≈ 0.79 | 0.8280 | +0.04 |
+| ShareGPT | WA | ≈ 0.80 | 0.8284 | +0.03 |
+| ShareGPT | OPT | — | 0.8288 | — |
+| Mixed, total | LRU | 0.5709 | 0.6287 | +0.06 |
+| Mixed, total | LFU | 0.3732 | 0.4805 | +0.11 |
+| Mixed, total | FIFO | 0.5469 | 0.6073 | +0.06 |
+| Mixed, total | WA | 0.5827 | 0.6592 | +0.08 |
+| Mixed, total | OPT | — | 0.7774 | — |
+| Mixed, MASH-QA part | LRU | 0.4247 | 0.5508 | +0.13 |
+| Mixed, MASH-QA part | LFU | 0.3627 | 0.4294 | +0.07 |
+| Mixed, MASH-QA part | FIFO | 0.4092 | 0.5266 | +0.12 |
+| Mixed, MASH-QA part | WA | 0.5083 | 0.6031 | +0.09 |
+| Mixed, MASH-QA part | OPT | — | 0.7562 | — |
+| Mixed, ShareGPT part | LRU | 0.7457 | 0.8179 | +0.07 |
+| Mixed, ShareGPT part | LFU | 0.3858 | 0.6045 | +0.22 |
+| Mixed, ShareGPT part | FIFO | 0.7113 | 0.8032 | +0.09 |
+| Mixed, ShareGPT part | WA | 0.6717 | 0.7954 | +0.12 |
+| Mixed, ShareGPT part | OPT | — | 0.8288 | — |
 
 | Workload | Best heuristic (ours) | Headroom: OPT − best heuristic (pp) | Ordering matches paper? |
 |---|---|---:|---|
-| MASH-QA | | | |
-| ShareGPT | | | |
-| Mixed, total | | | |
-| Mixed, MASH-QA part | | | |
-| Mixed, ShareGPT part | | | |
+| MASH-QA | LFU | 5.7 | Yes |
+| ShareGPT | LRU = WA | 0.0 | Yes (LFU gap far smaller: 0.02 vs 0.20) |
+| Mixed, total | WA | 11.8 | Yes |
+| Mixed, MASH-QA part | WA | 15.3 | Yes |
+| Mixed, ShareGPT part | LRU | 1.1 | Yes |
+
+Reading:
+- **Ordering reproduced in all 5 rows.** Every policy falls in the same rank order as the paper.
+- **Magnitudes:** single-task MASH-QA within 0.02 (by construction for LRU). Mixed rows are 0.06–0.13 higher
+  than the paper. LFU on ShareGPT is the one large miss: +0.21 alone and +0.22 in the mix (LFU still ranks last).
+- **Headroom is largest on the mixed workload:** 11.8 pp over the best heuristic (WA) in total, 15.3 pp on
+  its MASH-QA part. ShareGPT alone fits in this cache (OPT − LRU = 0.04 pp), so it has no headroom here.
+- OPT reaches the compulsory-miss ceiling everywhere (MASH-QA 0.756 = LRU with 200k+ blocks), so
+  OPT here is "every reusable prefix hit", the loosest possible bound.
 
 #### A2. QTTFT (paper Table 5)
 

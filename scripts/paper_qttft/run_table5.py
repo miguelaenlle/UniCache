@@ -20,6 +20,7 @@ Paper setup (Sec. 6.4): one A100, Llama-3.2-3B, KV budget 0.9A, three
       --out result/paper-qttft/aic-a100 --timing aic --jobs 9
 """
 import argparse
+import math
 import csv
 import json
 import os
@@ -49,8 +50,13 @@ def kv_bytes_per_block(model_dir: Path, block_size: int) -> int:
     return 2 * c["num_hidden_layers"] * c["num_key_value_heads"] * head_dim * 2 * block_size
 
 
-def trace_config(name: str, out: Path, arrival_scale: float) -> Path:
-    """Copy a Hybrid config with absolute paths, dropping missing datasets."""
+def trace_config(name: str, out: Path, arrival_scale: float, load: float = 1.0) -> Path:
+    """Copy a Hybrid config with absolute paths, dropping missing datasets.
+
+    ``load`` time-compresses the whole trace: session starts arrive ``load`` times
+    faster and multi-turn think times (lognormal, sigma > 0) shrink by the same
+    factor (mu - ln load), so the same sessions replay ``load`` times faster.
+    """
     cfg = yaml.safe_load((ROOT / f"TaskData/Hybrid/{name}/tasks_config.yaml").read_text())
     kept = []
     for task in cfg["tasks"]:
@@ -63,7 +69,9 @@ def trace_config(name: str, out: Path, arrival_scale: float) -> Path:
             print(f"  {name}: dropping {task['name']} (missing {task['data_path']})")
             continue
         task["data_path"] = str(path)
-        task["lambda_rate"] = task["lambda_rate"] / arrival_scale
+        task["lambda_rate"] = task["lambda_rate"] / arrival_scale * load
+        if load != 1.0 and float(task.get("sigma") or 0) > 0:
+            task["mu"] = float(task["mu"]) - math.log(load)
         kept.append(task)
     if not kept:
         raise SystemExit(f"{name}: no datasets available")
@@ -135,19 +143,27 @@ def latest_result(run_dir: Path) -> Path:
 def run_trace(label, name, args, pool):
     out = Path(args.out) / label
     if not args.table_only:
-        task_config = trace_config(name, out, args.arrival_scale)
-        # OPT needs the future-use map from a no-cache profile of the trace.
-        profile = pool.submit(simulate, "NONE", task_config, out / "NONE", args)
-        futures = [pool.submit(simulate, e, task_config, out / e, args)
-                   for e in POLICIES.values() if e != "OPT"]
-        use_map = profile.result() / "use_map.json"
-        futures.append(pool.submit(simulate, "OPT", task_config, out / "OPT",
-                                   args, use_map))
-        for f in futures:
+        task_config = trace_config(name, out, args.arrival_scale, args.load)
+        wanted = [e for e in POLICIES.values() if e in args.policies]
+        futures = []
+        profile = None
+        if "OPT" in wanted or "NONE" in args.policies:
+            # OPT needs the future-use map from a no-cache profile of the trace.
+            profile = pool.submit(simulate, "NONE", task_config, out / "NONE", args)
+        futures += [pool.submit(simulate, e, task_config, out / e, args)
+                    for e in wanted if e != "OPT"]
+        if "OPT" in wanted:
+            use_map = profile.result() / "use_map.json"
+            futures.append(pool.submit(simulate, "OPT", task_config, out / "OPT",
+                                       args, use_map))
+        for f in futures + ([profile] if profile else []):
             f.result()
     rows = []
-    for (paper_name, engine), paper_value in zip(POLICIES.items(),
-                                                PAPER_QTTFT_S[label]):
+    items = list(zip(POLICIES.items(), PAPER_QTTFT_S[label]))
+    items.append((("NONE (no caching)", "NONE"), None))
+    for (paper_name, engine), paper_value in items:
+        if engine not in args.policies and not (engine == "NONE" and (out / "NONE").is_dir()):
+            continue
         run_dir = out / engine
         if engine == "OPT" and (out / "OPT-refined").is_dir():
             run_dir = out / "OPT-refined"  # see refine_opt.py
@@ -176,13 +192,21 @@ def main():
     p.add_argument("--kv-gib", type=float, default=63.0, help="A (paper Table 4)")
     p.add_argument("--budget", type=float, default=0.9, help="fraction of A")
     p.add_argument("--arrival-scale", type=float, default=1.0)
+    p.add_argument("--load", type=float, default=1.0,
+                   help="time-compress the trace: starts x load, think times / load")
+    p.add_argument("--blocks", type=int, default=None,
+                   help="KV blocks (overrides --kv-gib/--budget)")
+    p.add_argument("--policies", nargs="+",
+                   default=list(POLICIES.values()) + ["NONE"],
+                   help="engine policy names to run (NONE = no caching)")
     p.add_argument("--traces", nargs="+", default=list(TRACES))
     p.add_argument("--jobs", type=int, default=9)
     p.add_argument("--table-only", action="store_true",
                    help="rebuild table5.md/csv from existing run directories")
     args = p.parse_args()
-    args.blocks = int(args.budget * args.kv_gib * 2**30
-                      // kv_bytes_per_block(Path(args.model), args.block_size))
+    if args.blocks is None:
+        args.blocks = int(args.budget * args.kv_gib * 2**30
+                          // kv_bytes_per_block(Path(args.model), args.block_size))
     print(f"KV budget {args.budget} x {args.kv_gib} GiB = {args.blocks} blocks "
           f"of {args.block_size} tokens; timing {args.timing}")
 
@@ -197,20 +221,27 @@ def main():
         w.writerows(rows)
     lines = ["| Trace | Policy | Paper QTTFT (s) | Sim QTTFT (s) | Sim / LRU | Paper / LRU | Sim hit ratio |",
              "|---|---|---:|---:|---:|---:|---:|"]
+    fmt = lambda x, f: "—" if x is None else format(x, f)
     for label in args.traces:
         group = [r for r in rows if r["trace"] == label]
-        lru = next(r for r in group if r["policy"] == "LRU")
+        lru = next((r for r in group if r["policy"] == "LRU"), None)
         for r in group:
-            lines.append(f"| {label} | {r['policy']} | {r['paper_qttft_s']:.2f} | "
-                         f"{r['sim_qttft_s']:.3f} | {r['sim_qttft_s'] / lru['sim_qttft_s']:.2f} | "
-                         f"{r['paper_qttft_s'] / lru['paper_qttft_s']:.2f} | {r['sim_hit_rate']:.4f} |")
+            p_lru = (r["paper_qttft_s"] / lru["paper_qttft_s"]
+                     if lru and r["paper_qttft_s"] is not None else None)
+            s_lru = r["sim_qttft_s"] / lru["sim_qttft_s"] if lru else None
+            lines.append(f"| {label} | {r['policy']} | {fmt(r['paper_qttft_s'], '.2f')} | "
+                         f"{r['sim_qttft_s']:.3f} | {fmt(s_lru, '.2f')} | "
+                         f"{fmt(p_lru, '.2f')} | {r['sim_hit_rate']:.4f} |")
     lines += ["", "| Trace | Spearman rho (sim vs paper QTTFT) | Same side of LRU |",
               "|---|---:|---:|"]
     for label in args.traces:
-        group = [r for r in rows if r["trace"] == label]
+        group = [r for r in rows if r["trace"] == label and r["paper_qttft_s"] is not None]
+        if len(group) < 3 or group[0]["policy"] != "LRU":
+            lines.append(f"| {label} | n/a (too few policies) | n/a |")
+            continue
         sim = [r["sim_qttft_s"] for r in group]
         paper = [r["paper_qttft_s"] for r in group]
-        lru_s, lru_p = sim[0], paper[0]  # LRU is first in POLICIES
+        lru_s, lru_p = sim[0], paper[0]
         if max(sim) - min(sim) < 1e-9:
             lines.append(f"| {label} | n/a (all policies equal) | n/a |")
             continue

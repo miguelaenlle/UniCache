@@ -22,6 +22,7 @@ CATALOG = {
     'AgentBank-APPS': 'TaskData/AgentBankData/tasks_config.yaml',
     'ALFRED': 'TaskData/AgentBankData/tasks_config_alfred.yaml',
     'CodeParrot': 'TaskData/Codeparrot/tasks_config.yaml',
+    'Mixed': 'TaskData/Hybrid/mixed-sharegpt-mashqa/tasks_config.yaml',
 }
 POLICIES = ['LRU', 'LFU', 'FIFO', 'LeCaR', 'ARC', 'WA', 'OPT', 'SimpleHYBRID']
 
