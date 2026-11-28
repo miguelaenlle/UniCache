@@ -123,9 +123,8 @@ goes stale once cache hits change step times.
 Practical limits:
 * A long multi-turn replay (ALFRED-heavy) holds about 3 GB of RAM. Run about 3
   in parallel on a 48 GB machine.
-* Submitted policies run offline in a sandbox: Seatbelt on macOS; on Linux
-  `unshare`, `bwrap` or an outer offline container (`UNICACHE_POLICY_SANDBOX`),
-  with no unsandboxed fallback.
+* Submitted policies run offline under Seatbelt on macOS or Bubblewrap with
+  libseccomp on Linux. Linux requires unprivileged user and network namespaces.
 * Baseline replays must run outside any parent sandbox that blocks OpenMP
   shared memory.
 * The coding agent needs `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` in the

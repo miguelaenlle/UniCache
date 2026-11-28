@@ -19,7 +19,7 @@ class IsolationTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(dir='result', mode='w') as hidden:
             hidden.write('private trace sentinel'); hidden.flush()
             source = 'class Policy:\n def __init__(self): open('+repr(str(Path(hidden.name).resolve()))+').read()\n'
-            with self.assertRaisesRegex(PolicyFailure,'PermissionError'):
+            with self.assertRaisesRegex(PolicyFailure,'PermissionError|FileNotFoundError'):
                 Remote(source)
 
     def test_network_denied(self):

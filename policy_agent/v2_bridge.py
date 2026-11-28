@@ -10,6 +10,7 @@ import sys
 import sysconfig
 
 from policy_agent.bridge import PolicyFailure, Remote, profile
+from policy_agent.isolation import python_source, sandbox_prefix
 
 
 def numerical_runtime():
@@ -30,8 +31,9 @@ class V2Remote(Remote):
         paths, packages, versions = numerical_runtime()
         runtime = Path(sys.executable).resolve()
         rules = profile([worker, sys.base_prefix, runtime, *packages])
+        prefix = sandbox_prefix(packages, rules=rules)
         self.process = subprocess.Popen(
-            ['/usr/bin/sandbox-exec', '-p', rules, str(runtime), '-I', '-S', '-c', worker.read_text()],
+            [*prefix, str(runtime), '-I', '-S', '-c', python_source(worker.read_text())],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1,
             env={'PATH': '/usr/bin:/bin', 'OMP_NUM_THREADS': '1', 'OPENBLAS_NUM_THREADS': '1',

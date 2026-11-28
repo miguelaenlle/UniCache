@@ -1,7 +1,7 @@
 """Install a trusted offline Python entry point for editable sandbox clients.
 
 The launcher lives outside the coding workspace. Neither the client's source nor a
-cwd module runs before Seatbelt is active. The runner must also prevent its coding
+cwd module runs before OS isolation is active. The runner must also prevent its coding
 CLI's Write/Edit tools from replacing sandbox/bin/python or its parent directory.
 """
 import json
@@ -10,6 +10,7 @@ import shlex
 import sys
 
 from policy_agent.bridge import profile
+from policy_agent.isolation import python_source, sandbox_prefix
 
 
 _INNER = '''import json, os, runpy, sys
@@ -45,6 +46,10 @@ def install_client_python(sandbox, python=None):
     rules += '\n(deny file-write* (subpath ' + private_home + '))'
     clean_env = {'PATH': '/usr/bin:/bin', 'HOME': str(temporary),
                  'TMPDIR': str(temporary), 'PYTHONDONTWRITEBYTECODE': '1'}
+    prefix = sandbox_prefix(
+        [runtime], rules=rules, workspace=sandbox, writable=sandbox,
+        read_only=[binary_dir], hidden=[sandbox / 'home'],
+    )
     bootstrap = f'''import os, sys
 from pathlib import Path
 workspace = Path({str(sandbox)!r})
@@ -54,8 +59,9 @@ script = Path(sys.argv[1])
 script = (workspace / script).resolve() if not script.is_absolute() else script.resolve()
 if not script.is_relative_to(workspace) or script.suffix != ".py":
     raise SystemExit("Client script must be a Python file inside the sandbox")
-os.execve("/usr/bin/sandbox-exec", ["sandbox-exec", "-p", {rules!r},
-    {str(runtime)!r}, "-I", "-S", "-c", {_INNER!r}, str(workspace), str(script), *sys.argv[2:]], {clean_env!r})
+prefix = {prefix!r}
+os.execve(prefix[0], [*prefix, {str(runtime)!r}, "-I", "-S", "-c", {python_source(_INNER)!r},
+    str(workspace), str(script), *sys.argv[2:]], {clean_env!r})
 '''
     command = '#!/bin/sh\nexec ' + shlex.quote(str(runtime)) + ' -I -S -c ' + shlex.quote(bootstrap) + ' "$@"\n'
     if launcher.exists():
