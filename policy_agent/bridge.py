@@ -1,4 +1,4 @@
-"""Trusted adapter; submitted Python runs only in the Seatbelt worker."""
+"""Trusted adapter; submitted Python runs only in an isolated worker."""
 import enum
 import inspect
 import json
@@ -7,6 +7,8 @@ from pathlib import Path
 import select
 import subprocess
 import sys
+
+from policy_agent.isolation import python_source, sandbox_prefix
 
 
 def profile(read_paths, writable=None, network=False):
@@ -34,9 +36,10 @@ class PolicyFailure(RuntimeError):
 class Remote:
     def __init__(self, source):
         worker = Path(__file__).with_name('worker.py').resolve()
+        runtime = Path(sys.executable).resolve()
+        prefix = sandbox_prefix([], rules=profile([worker, sys.base_prefix, runtime]))
         self.process = subprocess.Popen(
-            ['/usr/bin/sandbox-exec', '-p', profile([worker, sys.base_prefix, Path(sys.executable).resolve()]),
-             str(Path(sys.executable).resolve()), '-I', '-S', '-c', worker.read_text()],
+            [*prefix, str(runtime), '-I', '-S', '-c', python_source(worker.read_text())],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, env={'PATH': '/usr/bin:/bin'})
         try:

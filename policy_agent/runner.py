@@ -1,4 +1,4 @@
-"""Policy optimization runner; host evaluator, restricted Claude CLI and Seatbelt-isolated policy workers."""
+"""Policy optimization runner; host evaluator, restricted Claude CLI and offline policy workers."""
 import argparse
 from contextlib import nullcontext
 import csv
@@ -42,6 +42,15 @@ Read the feedback and history.jsonl, then iterate. You get {budget} attempts;
 accepted failures count. Eval results are hidden. Your best tune submission is kept.
 Finish early: python submit.py --done --reason "<why you are stopping>"
 '''
+EXPERIENCE = '''
+Experience from earlier runs on this trace and cache configuration is in experience/:
+lessons.md (lessons distilled by earlier runs), best_policy.py and best.json (best tune
+policy so far and its starting policy), runs.jsonl and submissions.jsonl (past tune
+results and rationales) and conversation.jsonl (past agent conversations).
+Read lessons.md first and build on what worked. Keep experience/lessons.md updated with
+short lessons on what worked and what did not; the run may end right after your last
+submission, and only lessons.md is carried to the next run.
+'''
 API = '''# Policy interface
 Implement class Policy with __init__(), on_event(event), and evict(now).
 on_event receives batches in their original order before evict is called.
@@ -74,6 +83,55 @@ def write(path, data):
     tmp = path.with_suffix(path.suffix + '.tmp')
     tmp.write_text(json.dumps(data, indent=2))
     tmp.replace(path)
+
+
+def experience_store(args, manifest):
+    """Experience is shared across start policies for one trace and cache configuration."""
+    key = (f"{args.trace}-{args.serving_model}-{args.policy_interface}-"
+           f"{args.gpu_blocks}blocks-{manifest['source_session_limit']}sessions")
+    return ROOT/'result/policy-agent/experience'/key
+
+
+def load_experience(store, sandbox):
+    store.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(store, sandbox/'experience')
+    if not (sandbox/'experience'/'lessons.md').exists():
+        (sandbox/'experience'/'lessons.md').write_text('# Lessons\n\nNo earlier runs yet.\n')
+
+
+def save_experience(store, sandbox, evaluator, transcript):
+    """Append this run's tune-only results and conversation. Eval scores never enter the store."""
+    run = evaluator.out.relative_to(ROOT/'result/policy-agent').as_posix()
+    rows = [{k: v for k, v in r.items() if k not in ('eval', 'eval_error')} for r in evaluator.rows]
+    for r in rows:
+        if 'error' in r:
+            r['error'] = r['error'].replace(str(evaluator.out), '<evaluator>')
+    with (store/'submissions.jsonl').open('a') as f:
+        f.write(''.join(json.dumps(dict(r, run=run))+'\n' for r in rows))
+    with (store/'conversation.jsonl').open('a') as f:
+        f.write(''.join(json.dumps(dict(item, run=run))+'\n' for item in transcript))
+    # Only lessons.md comes back from the agent's workspace; the rest is rebuilt by the host.
+    lessons = sandbox/'experience'/'lessons.md'
+    if (lessons.is_file() and not lessons.is_symlink() and lessons.resolve().is_relative_to(sandbox.resolve())
+            and lessons.stat().st_size <= 1024*1024):
+        shutil.copyfile(lessons, store/'lessons.md')
+    valid = [r for r in rows if r['status'] == 'ok']
+    best = max(valid, key=lambda r: (r['tune']['token_weighted_hit_ratio'], -r['submission'])) if valid else None
+    old = json.loads((store/'best.json').read_text()) if (store/'best.json').exists() else None
+    if best and (old is None or best['tune']['token_weighted_hit_ratio'] > old['tune_hit_ratio']):
+        shutil.copyfile(evaluator.out/'internal'/f"submission-{best['submission']:04d}"/'policy.py', store/'best_policy.py')
+        write(store/'best.json', {'run': run, 'submission': best['submission'],
+                                  'start_policy': evaluator.args.start_policy,
+                                  'tune_hit_ratio': best['tune']['token_weighted_hit_ratio']})
+    stop = json.loads((evaluator.out/'stop.json').read_text()) if (evaluator.out/'stop.json').exists() else {}
+    with (store/'runs.jsonl').open('a') as f:
+        f.write(json.dumps({'run': run, 'start_policy': evaluator.args.start_policy,
+                            'submissions': len(rows), 'stop': stop.get('reason'),
+                            'best_submission': best['submission'] if best else None,
+                            'best_tune_hit_ratio': best['tune']['token_weighted_hit_ratio'] if best else None,
+                            'baselines_tune_hit_ratio': {name: s['tune']['token_weighted_hit_ratio']
+                                                         for name, s in evaluator.comparisons
+                                                         if 'tune' in s and 'OPT' not in name}})+'\n')
 
 
 def prepare(args):
@@ -341,6 +399,8 @@ def main():
     p.add_argument('--prepare-only', action='store_true', help='Build sandbox and splits without simulations or Claude')
     p.add_argument('--sessions', type=int, help='Explicit source subset override; default authors standalone limit (1000)')
     p.add_argument('--gpu-blocks', type=int, default=50000)
+    p.add_argument('--experience', action='store_true',
+                   help='Read and extend tune-only experience shared by earlier runs on this trace and cache configuration')
     args = p.parse_args()
     if not args.coding_model.startswith('claude:') or not args.coding_model.split(':',1)[1]:
         p.error('Only claude:<model> is supported')
@@ -353,8 +413,11 @@ def main():
         p.error('Required baselines must also be selected for comparison')
     if sys.version_info < (3,12):
         p.error('Use the Python 3.12 simulator environment')
-    if not Path('/usr/bin/sandbox-exec').exists():
-        p.error('V1 currently requires macOS Seatbelt; no unsafe fallback')
+    from policy_agent.isolation import sandbox_prefix
+    try:
+        sandbox_prefix([], rules='')
+    except RuntimeError as error:
+        p.error(str(error))
     if args.normal_cli_auth and not args.prepare_only:
         auth = subprocess.run(['claude','auth','status'], capture_output=True, text=True, check=True)
         if not json.loads(auth.stdout).get('loggedIn'):
@@ -379,7 +442,9 @@ def main():
     else:
         shutil.copyfile(ROOT/'policy_agent/starter.py', sandbox/'policy.py')
     (sandbox/'rationale.md').write_text('Keep the starting policy unchanged.\n')
-    (sandbox/'prompt.md').write_text(PROMPT.format(budget=args.max_submissions))
+    (sandbox/'prompt.md').write_text(PROMPT.format(budget=args.max_submissions) + (EXPERIENCE if args.experience else ''))
+    if args.experience:
+        load_experience(experience_store(args, manifest), sandbox)
     (sandbox/'policy_api.md').write_text((ROOT/'policy_agent/v2_api.md').read_text()
                                         if args.policy_interface == 'v2' else API)
     (sandbox/'history.jsonl').touch()
@@ -495,6 +560,7 @@ def main():
     thread = threading.Thread(target=serve,daemon=True)
     thread.start()
     cmd, env = claude_command(sandbox, args.coding_model)
+    transcript = []
     try:
         with ((out/'claude.log').open('w') if args.debug else nullcontext(None)) as log:
             print(f'Starting {args.coding_model}; streaming activity to terminal' + (' and claude.log' if args.debug else ' (agent log disabled)'), flush=True)
@@ -510,6 +576,8 @@ def main():
                         log.flush()
                     try:
                         event = json.loads(line)
+                        if event.get('type') in ('assistant', 'user'):
+                            transcript.append({'role': event['type'], 'content': event.get('message', {}).get('content', [])})
                         if event.get('type') == 'assistant':
                             for item in event.get('message',{}).get('content',[]):
                                 if item.get('type') == 'text':
@@ -560,6 +628,8 @@ def main():
         stop.set()
         thread.join()
         evaluator.artifacts()
+        if args.experience:
+            save_experience(experience_store(args, manifest), sandbox, evaluator, transcript)
     print(f'Finished. Results: {out}')
 
 

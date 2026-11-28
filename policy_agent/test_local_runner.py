@@ -48,11 +48,11 @@ class LocalTests(unittest.TestCase):
         hidden.write_text('trace sentinel')
         result=self.script(f'open({str(hidden)!r}).read()')
         self.assertFalse(result['ok'])
-        self.assertIn('PermissionError',result['output'])
+        self.assertRegex(result['output'], 'PermissionError|FileNotFoundError')
         (self.workspace/'home/credentials').write_text('credential sentinel')
         result=self.script("open('home/credentials').read()")
         self.assertFalse(result['ok'])
-        self.assertIn('PermissionError',result['output'])
+        self.assertRegex(result['output'], 'PermissionError|FileNotFoundError')
 
     def test_network_and_workspace_writes_denied(self):
         result=self.script("import socket\nsocket.create_connection(('127.0.0.1',80))")
@@ -60,7 +60,7 @@ class LocalTests(unittest.TestCase):
         self.assertIn('PermissionError',result['output'])
         result=self.script("open('policy.py','w').write('changed')")
         self.assertFalse(result['ok'])
-        self.assertIn('PermissionError',result['output'])
+        self.assertRegex(result['output'], 'PermissionError|Read-only file system')
 
     def test_limits(self):
         result=self.script('while True: pass',timeout=.3)

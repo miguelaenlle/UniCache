@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from policy_agent.bridge import profile
+from policy_agent.isolation import python_source, sandbox_prefix
 
 MAX_OUTPUT = 1024*1024
 BOOTSTRAP = '''
@@ -54,7 +55,9 @@ def run_test(workspace, message, timeout=30):
     rules = profile([workspace, script, sys.base_prefix, runtime, *packages], writable=output, network=False)
     # Coding-session auth/config is not an input to local Python tests.
     rules += '\n(deny file-read-data (subpath ' + json.dumps(str(workspace/'home')) + '))'
-    command = ['/usr/bin/sandbox-exec','-p',rules,str(runtime),'-I','-S','-c',BOOTSTRAP,
+    prefix = sandbox_prefix([script, *packages], rules=rules, workspace=workspace,
+                            writable=output, hidden=[workspace / 'home'])
+    command = [*prefix, str(runtime), '-I', '-S', '-c', python_source(BOOTSTRAP),
                str(workspace),str(script),*args]
     env = {'PATH':'/usr/bin:/bin', 'HOME':str(output), 'TMPDIR':str(output)}
     env['POLICY_DEPENDENCY_PATHS'] = json.dumps(dependencies)

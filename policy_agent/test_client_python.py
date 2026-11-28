@@ -2,7 +2,9 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -12,7 +14,9 @@ from unittest.mock import patch
 from policy_agent.client_python import install_client_python
 
 
-@unittest.skipUnless(Path('/usr/bin/sandbox-exec').exists(), 'macOS Seatbelt required')
+@unittest.skipUnless(Path('/usr/bin/sandbox-exec').exists() or
+                     (sys.platform == 'linux' and shutil.which('bwrap')),
+                     'Seatbelt or Bubblewrap required')
 class ClientPythonTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='unicache-client-boundary-')
@@ -41,7 +45,7 @@ class ClientPythonTests(unittest.TestCase):
         result = self.run_client(f'''from pathlib import Path
 try:
     print(Path({str(self.canary)!r}).read_text())
-except PermissionError:
+except (PermissionError, FileNotFoundError):
     print("DENIED")
 ''')
         self.assert_canary_hidden(result)
@@ -50,7 +54,7 @@ except PermissionError:
         (self.sandbox/'json.py').write_text(f'''from pathlib import Path
 try:
     print(Path({str(self.canary)!r}).read_text())
-except PermissionError:
+except (PermissionError, FileNotFoundError):
     print("DENIED")
 ''')
         # The trusted bootstrap imports standard-library json before adding cwd.
@@ -140,10 +144,13 @@ for action in (lambda: Path("home/DUMMY-auth.txt").read_text(),
                lambda: os.listdir("home")):
     try:
         action()
-    except PermissionError:
+    except OSError as error:
+        import errno
+        assert error.errno in (errno.EACCES, errno.EPERM, errno.ENOENT, errno.EROFS), error
         print("DENIED")
     else:
-        raise AssertionError("private CLI home unexpectedly accessible")
+        assert action() == [], "private CLI home unexpectedly accessible"
+        print("DENIED")
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count('DENIED'), 3)
@@ -153,7 +160,7 @@ for action in (lambda: Path("home/DUMMY-auth.txt").read_text(),
     def test_network_and_fork_are_denied(self):
         result = self.run_client('''import errno, socket, subprocess
 for action in (lambda: socket.create_connection(("127.0.0.1", 9), timeout=1),
-               lambda: subprocess.run(["/usr/bin/true"], check=True)):
+               lambda: subprocess.run([__import__("sys").executable, "-c", "pass"], check=True)):
     try:
         action()
     except OSError as error:
@@ -174,7 +181,9 @@ for action in (lambda: Path("bin/python").unlink(),
                lambda: Path("bin/replacement").write_text("bad")):
     try:
         action()
-    except PermissionError:
+    except OSError as error:
+        import errno
+        assert error.errno in (errno.EACCES, errno.EPERM, errno.EROFS, errno.EBUSY), error
         print("DENIED")
     else:
         raise AssertionError("sandbox unexpectedly allowed entry-point mutation")

@@ -6,8 +6,11 @@ decisions. See [the v2 contract](policy_agent/v2_api.md),
 [manual replay commands](EXPERIMENTS.md#editable-policy-interface-v2-manual-validation-no-coding-model)
 and [reference verification](result/policy-interface-v2/report.md).
 
-Requires macOS, the `.venv-sim312` simulator environment, prepared ShareGPT data,
-and the Claude Code CLI. No weights or GPU are used. The coding model uses the
+Requires the `.venv-sim312` simulator environment, prepared ShareGPT data, and
+the Claude Code CLI. On macOS, policy isolation uses Seatbelt. On Linux, install
+Bubblewrap (`bwrap`) and the `libseccomp.so.2` runtime. Bubblewrap must be able
+to create unprivileged user and network namespaces on the host. Run the policy
+agent from a normal terminal if an enclosing sandbox blocks those namespaces. No weights or GPU are used. The coding model uses the
 Claude service; simulator replays remain offline.
 
 The isolated CLI needs `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` in your shell.
@@ -20,7 +23,7 @@ explicit option uses the normal CLI home/account context for authentication with
 extracting credentials. Restricted and safe modes remain active: personal
 instructions/settings, plugins, hooks and MCP are disabled, and file tools remain
 confined to the coding workspace. Submitted policies and custom tests retain their
-separate offline Seatbelt sandbox. The coding CLI uses tool restrictions, not an OS
+separate offline OS sandbox. The coding CLI uses tool restrictions, not an OS
 sandbox.
 
 The permitted Python client commands also run through a small trusted launcher
@@ -40,6 +43,18 @@ commands even if a client script is edited.
 ```
 
 Add `--prepare-only` to inspect the sandbox without simulations or API calls.
+
+Add `--experience` for experiential learning across runs. Runs that share a trace,
+serving model, policy interface, `--gpu-blocks` and session count (with any start
+policy) share a store in `result/policy-agent/experience/<key>/`. It holds
+`lessons.md`, `best_policy.py`/`best.json`, `runs.jsonl`, `submissions.jsonl` and
+`conversation.jsonl`. It is copied into `sandbox/experience/` at start. When the run
+ends, the host appends this run's tune-only results and conversation, then copies
+back the agent's `lessons.md`. Eval scores and OPT baselines never enter the store.
+To compare runs with and without `--experience`, use
+`.venv-sim312/bin/python scripts/compare_experience_runs.py --since <YYYY-MM-DD>`.
+It prints tune and eval deltas in pp, against LRU and against the best heuristic
+chosen on tune, for each run and as means for each arm.
 For a small integration trial, add `--sessions 4 --compare UniCache --max-submissions 1`.
 
 Default source subset: the authors' standalone ShareGPT limit of 1,000 sessions.
@@ -79,7 +94,7 @@ It does not measure trace hit ratio or replace submission validation.
 
 Claude may author custom Python scripts anywhere inside its workspace, then execute
 them through `run_local.py`. The trusted evaluator launches each script in an offline
-Seatbelt process with standard-library Python and access to workspace files (including
+sandboxed process with standard-library Python and access to workspace files (including
 `policy.py`), excluding the coding session's home/credentials. Scripts can write only
 to `local-output/`. Limits: 30 seconds wall time, 10 seconds CPU, 1 MiB captured output,
 10 MiB per output file; no strict total disk/memory cap. Processes cannot fork.
@@ -113,12 +128,12 @@ not prevent every possible escape or tampering with local feedback; authoritativ
 scores and budgets remain in the external evaluator. Do not treat it as hostile-code
 hosting. Claude startup stops after 90 seconds if no output is received.
 
-Submitted policies still execute separately under macOS Seatbelt, with no network,
+Submitted policies still execute separately under Seatbelt or Bubblewrap, with no network,
 user-data reads or filesystem writes, plus callback/CPU deadlines. System/runtime
 files and directory names remain readable. A strict policy memory cap is not yet
-implemented. Policy execution refuses to run without Seatbelt.
+implemented. Policy execution refuses to run without an active OS sandbox.
 
-Local isolation checks (run from a normal Terminal, not another Seatbelt sandbox):
+Local isolation checks (run from a normal Terminal, outside an enclosing OS sandbox):
 
 ```bash
 .venv-sim312/bin/python -m unittest policy_agent.test_sandbox policy_agent.test_local_runner -v
@@ -157,7 +172,7 @@ under the host-only `internal/baselines/OPT/` directory. The agent receives no
 baseline scores, baseline implementations, future-use maps, or eval feedback.
 Its starting LRU policy and own submission-0 tune score are necessarily visible.
 The coding boundary is Claude's restricted tools (a practical guardrail, not a
-hardened OS boundary); submitted policies and custom tests retain Seatbelt isolation.
+hardened OS boundary); submitted policies and custom tests retain OS isolation.
 
 For a single workload:
 

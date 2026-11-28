@@ -52,7 +52,7 @@ class WorkerTests(unittest.TestCase):
         for expression in (f'open({str(private)!r}).read()',
                            '__import__("socket").create_connection(("127.0.0.1", 9))'):
             source = SOURCE[:SOURCE.index('    def evict')] + f'    def evict(self, context): return {expression}\n'
-            with self.assertRaisesRegex(PolicyFailure, 'PermissionError'):
+            with self.assertRaisesRegex(PolicyFailure, 'PermissionError|FileNotFoundError'):
                 self.remote(source).call({'events':[],'choose':True,'context':{'through_event_id':0}})
 
     def test_numerical_dependencies_work_without_baseline_import(self):
